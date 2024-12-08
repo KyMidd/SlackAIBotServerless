@@ -1,4 +1,6 @@
 # Single request to the Bedrock API using the Claude model
+# Author: Kyler Middleton
+# Blog about this file: https://www.letsdodevops.com/p/lets-do-devops-building-an-azure
 
 ###
 # Imports

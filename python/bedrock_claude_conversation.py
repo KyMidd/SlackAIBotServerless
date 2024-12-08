@@ -1,4 +1,6 @@
 # Purpose: This script demonstrates how to use the Bedrock API to have a conversation with the Claude model.
+# Author: Kyler Middleton
+# Blog about this file: https://www.letsdodevops.com/p/lets-do-devops-building-an-azure
 
 ###
 # Imports
