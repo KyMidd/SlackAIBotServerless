@@ -2,6 +2,12 @@
 
 This repo contains the source files to build a fully functional and interactive AI chatbot and integrate it with Slack as an App. The integration is serverless both on the AWS Bedrock AI side (serverless AI mode) and on the AWS side (Lambda). 
 
+This code is discussed at length on LetsDoDevOps.com, you can find the articles here: 
+- [Part 1: Covers how to build a slack bot in websocket mode](https://www.letsdodevops.com/p/lets-do-devops-building-an-azure)
+- [Part 2: How to deploy an AWS Bedrock AI resource and connect to it to ask a request locally from your terminal with python3](https://www.letsdodevops.com/p/lets-do-devops-building-a-slack-bot)
+- Part 3: We’ll connect our slack bot with Bedrock locally using python3 with ngrok so slack users can have conversations with AI (link coming when published)
+- Part 4: How to convert your local script to an event-driven serverless, cloud-based app in AWS Lambda (link coming when published)
+
 # Architecture
 
 Requests are relayed from the Slack App to a private Lambda URL, which spins up quite quickly. It fetches the necessary secrets from secrets manager (authentication is via IAM role) to enable the slack app for decoding the requests, then extracts both the request, and if applicable, the slack thread, which is all encoded into the request to the AI in Bedrock. The response is relayed and posted to the thread. 
