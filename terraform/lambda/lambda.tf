@@ -72,11 +72,17 @@ resource "aws_iam_role_policy" "DevOpsBotSlackTrigger_ReadSecrets" {
           "Action" : "secretsmanager:ListSecrets",
           "Resource" : "*"
         },
-        # Grant permission to invoke bedrock models of any type in us-west-2 region
+        # Grant permission to invoke bedrock models of any type in us-west-2 region. Cannot specify account ID
         {
           "Effect" : "Allow",
           "Action" : "bedrock:InvokeModel",
           "Resource" : "arn:aws:bedrock:us-west-2::foundation-model/*"
+        },
+        # Grant permission to invoke bedrock guardrails of any type in us-west-2 region. Must specify account ID
+        {
+          "Effect" : "Allow",
+          "Action" : "bedrock:ApplyGuardrail",
+          "Resource" : "arn:aws:bedrock:us-west-2:${data.aws_caller_identity.current.account_id}:guardrail/*"
         }
       ]
     }
