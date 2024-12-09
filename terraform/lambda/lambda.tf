@@ -143,15 +143,17 @@ rm -rf lambda/slack_bolt
 mkdir -p lambda/slack_bolt/python/lib/python3.12/site-packages/
 pip3 install slack_bolt -t lambda/slack_bolt/python/lib/python3.12/site-packages/. --no-cache-dir 
 */
-data "archive_file" "slack_bolt" {
-  type        = "zip"
-  source_dir  = "${path.module}/slack_bolt"
-  output_path = "${path.module}/slack_bolt_layer.zip"
-}
+
+# Committing the zip file directly, rather than creating it, so don't have to commit huge number of files
+# data "archive_file" "slack_bolt" {
+#   type        = "zip"
+#   source_dir  = "${path.module}/slack_bolt"
+#   output_path = "${path.module}/slack_bolt_layer.zip"
+# }
 resource "aws_lambda_layer_version" "slack_bolt" {
   layer_name       = "SlackBolt"
-  filename         = data.archive_file.slack_bolt.output_path
-  source_code_hash = data.archive_file.slack_bolt.output_base64sha256
+  filename         = "${path.module}/slack_bolt_layer.zip"
+  source_code_hash = filesha256("${path.module}/slack_bolt_layer.zip")
 
   compatible_runtimes      = ["python3.12"]
   compatible_architectures = ["arm64"]
