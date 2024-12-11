@@ -27,7 +27,7 @@ from slack_bolt.adapter.aws_lambda import SlackRequestHandler
 model_id = 'anthropic.claude-3-5-sonnet-20241022-v2:0'
 anthropic_version = "bedrock-2023-05-31"
 temperature = 0.2
-guardrailIdentifier = "4raioni9cwpe" # DevOpsBotGuardrail
+guardrailIdentifier = "xxxxxxxxxx"
 guardrailVersion = "DRAFT"
 
 # Enable logging
@@ -237,7 +237,7 @@ def lambda_handler(event, context):
     print(event)
 
     # Fetch secret package
-    secrets = get_secret("DEVOPSBOT_SECRETS_JSON", "us-east-1")
+    secrets = get_secret("SLACKBOT_SECRETS_JSON", "us-east-1")
 
     # Disambiguate the secrets with json lookups
     secrets_json = json.loads(secrets)
@@ -274,7 +274,7 @@ if __name__ == "__main__":
     print("🚀 Local server starting starting")
 
     # Fetch secret package
-    secrets = get_secret("DEVOPSBOT_SECRETS_JSON", "us-east-1")
+    secrets = get_secret("SLACKBOT_SECRETS_JSON", "us-east-1")
 
     # Disambiguate the secrets with json lookups
     secrets_json = json.loads(secrets)
