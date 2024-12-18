@@ -29,9 +29,10 @@ from slack_bolt.adapter.aws_lambda import SlackRequestHandler
 model_id = 'anthropic.claude-3-5-sonnet-20241022-v2:0'
 anthropic_version = "bedrock-2023-05-31"
 temperature = 0.2
+bot_secret_name = "DEVOPSBOT_SECRETS_JSON"
+enable_guardrails = False # Won't use guardrails if False
 guardrailIdentifier = "xxxxxxxxxx"
 guardrailVersion = "DRAFT"
-bot_secret_name = "SLACKBOT_SECRETS_JSON"
 
 # Enable logging
 #logging.basicConfig(level=logging.DEBUG)
@@ -101,25 +102,42 @@ def create_app(token, signing_secret):
 
 # Function to handle ai request input and response
 def ai_request(bedrock_client, messages):
-  response = bedrock_client.invoke_model(
-    modelId=model_id,
-    guardrailIdentifier=guardrailIdentifier,
-    guardrailVersion=guardrailVersion,
-    body=json.dumps(
-      {
-        "anthropic_version": anthropic_version,
-        #"betas": ["pdfs-2024-09-25"], # This is not yet supported, https://docs.anthropic.com/en/docs/build-with-claude/pdf-support#supported-platforms-and-models
-        "max_tokens": 1024,
-        "messages": messages,
-        "temperature": temperature,
-        "system": model_guidance,
-      }
-    ),
-  ) 
+  # If enable_guardrails is set to True, include guardrailIdentifier and guardrailVersion in the request
+  if enable_guardrails:
+    response = bedrock_client.invoke_model(
+      modelId=model_id,
+      guardrailIdentifier=guardrailIdentifier,
+      guardrailVersion=guardrailVersion,
+      body=json.dumps(
+        {
+          "anthropic_version": anthropic_version,
+          #"betas": ["pdfs-2024-09-25"], # This is not yet supported, https://docs.anthropic.com/en/docs/build-with-claude/pdf-support#supported-platforms-and-models
+          "max_tokens": 1024,
+          "messages": messages,
+          "temperature": temperature,
+          "system": model_guidance,
+        }
+      ),
+    )
+  # If enable_guardrails is set to False, do not include guardrailIdentifier and guardrailVersion in the request
+  else:
+    response = bedrock_client.invoke_model(
+      modelId=model_id,
+      body=json.dumps(
+        {
+          "anthropic_version": anthropic_version,
+          #"betas": ["pdfs-2024-09-25"], # This is not yet supported, https://docs.anthropic.com/en/docs/build-with-claude/pdf-support#supported-platforms-and-models
+          "max_tokens": 1024,
+          "messages": messages,
+          "temperature": temperature,
+          "system": model_guidance,
+        }
+      ),
+    )
   return response
 
 # Check for duplicate events
-def local_check_for_duplicate_event(req):
+def local_check_for_duplicate_event(req, payload):
     
     # Isolate headers
     headers = req.headers
@@ -130,6 +148,14 @@ def local_check_for_duplicate_event(req):
       print("Detected a re-send, exiting")
       logging.info("Detected a re-send, exiting")
       return True
+
+    if os.environ.get("VERA_DEBUG", "False") == "True":
+        print("🚀 Payload:", payload)
+
+    # Check if edited message
+    if "subtype" in payload and payload.get("subtype") == "message_changed":
+        print("Detected a message edited event, responding with http 200 and exiting")
+        return True
 
 # Function to build the content of a conversation
 def build_conversation_content(payload, token):
@@ -370,6 +396,12 @@ def isolate_event_body(event):
     # Return the event
     return body
 
+# Check if the event is a message edited event
+def is_message_edited_event(event_body):
+    if "event" in event_body and event_body["event"].get("subtype") == "message_changed":
+        return True
+    return False
+
 # Define handler function for AWS Lambda
 def lambda_handler(event, context):
     
@@ -395,6 +427,16 @@ def lambda_handler(event, context):
             "statusCode": 200,
             "body": json.dumps({
                 "challenge": event_body["challenge"]
+            }),
+        }
+
+    # Check if the event is a message edited event
+    if is_message_edited_event(event_body):
+        print("🚀 Detected a message edited event, responding with http 200 and exiting")
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "message": "Message edited event detected, exiting"
             }),
         }
 
@@ -463,21 +505,31 @@ if __name__ == "__main__":
     @app.message()
     def message_hello(client, body, say, payload, req):
       # Check for duplicate message
-      if local_check_for_duplicate_event(req) == True:
+      if local_check_for_duplicate_event(req, payload) == True:
         return
 
       # Handle request
-      handle_message_event(client, body, say, bedrock_client, app)
+      handle_message_event(client, body, say, bedrock_client, app, token)
 
     # Responds to app mentions
     @app.event("app_mention")
     def handle_app_mention_events(client, body, say, req):
       # Check for duplicate message
-      if local_check_for_duplicate_event(req) == True:
+      if local_check_for_duplicate_event(req, payload) == True:
         return
 
       # Handle request
-      handle_message_event(client, body, say, bedrock_client, app)
+      handle_message_event(client, body, say, bedrock_client, app, token)
+
+    # Respond to file share events
+    @app.event("message")
+    def handle_message_events(client, body, say, req, payload):
+      # Check for duplicate message
+      if local_check_for_duplicate_event(req, payload) == True:
+        return
+
+      # Handle request
+      handle_message_event(client, body, say, bedrock_client, app, token)
 
     # Start the app in websocket mode for local development
     # Will require a separate terminal to run ngrok, e.g.: ngrok http http://localhost:3000
