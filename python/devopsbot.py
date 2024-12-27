@@ -144,8 +144,8 @@ def check_for_duplicate_event(headers, payload):
     # Check headers, if x-slack-retry-num is present, this is a re-send
     # Really we should be doing async lambda model, but for now detecting resends and exiting
     if "x-slack-retry-num" in headers:
-        print("Detected a re-send, exiting")
-        logging.info("Detected a re-send, exiting")
+        print("❌ Detected a re-send, exiting")
+        logging.info("❌ Detected a re-send, exiting")
         return True
 
     # Check if edited message in local development
@@ -522,18 +522,6 @@ if __name__ == "__main__":
     # Register the AWS Bedrock AI client
     print("🚀 Registering the AWS Bedrock client")
     bedrock_client = create_bedrock_client(model_region_name)
-
-    # Respond to DMs
-    @app.message()
-    def message_hello(client, body, say, payload, req):
-        # Check for duplicate event or trash messages, return 200 and exit if detected
-        if check_for_duplicate_event(req.headers, payload):
-            return generate_response(
-                200, "❌ Detected a re-send or edited message, exiting"
-            )
-
-        # Handle request
-        handle_message_event(client, body, say, bedrock_client, app, token)
 
     # Responds to app mentions
     @app.event("app_mention")
