@@ -61,7 +61,7 @@ For nested bullets in numbered lists, Assistant uses three spaces before the num
 
 
 # Get GitHubPAT secret from AWS Secrets Manager that we'll use to start the githubcop workflow
-def get_secret(secret_name, region_name):
+def get_secret_with_client(secret_name, region_name):
 
     # Create a Secrets Manager client
     session = boto3.session.Session()
@@ -69,7 +69,7 @@ def get_secret(secret_name, region_name):
 
     try:
         get_secret_value_response = client.get_secret_value(SecretId=secret_name)
-    except ClientError as e:
+    except requests.exceptions.RequestException as e:
         # For a list of exceptions thrown, see
         # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
         print("Had an error attempting to get secret from AWS Secrets Manager:", e)
@@ -81,6 +81,30 @@ def get_secret(secret_name, region_name):
     # Print happy joy joy
     print("🚀 Successfully got secret", secret_name, "from AWS Secrets Manager")
 
+    # Return the secret
+    return secret
+
+
+# Get the secret using the SSM lambda layer
+def get_secret_ssm_layer(secret_name):
+    secrets_extension_endpoint = "http://localhost:2773/secretsmanager/get?secretId=" + secret_name
+  
+    # Create headers
+    headers = {"X-Aws-Parameters-Secrets-Token": os.environ.get('AWS_SESSION_TOKEN')}
+    
+    # Fetch secret
+    try:
+        secret = requests.get(secrets_extension_endpoint, headers=headers)
+    except requests.exceptions.RequestException as e:
+        print("Had an error attempting to get secret from AWS Secrets Manager:", e)
+        raise e
+  
+    # Print happy joy joy
+    print("🚀 Successfully got secret", secret_name, "from AWS Secrets Manager")
+  
+    # Decode secret string
+    secret = json.loads(secret.text)["SecretString"] # load the Secrets Manager response into a Python dictionary, access the secret
+    
     # Return the secret
     return secret
 
@@ -471,7 +495,7 @@ def lambda_handler(event, context):
     print("🚀 Event:", event)
 
     # Fetch secret package
-    secrets = get_secret(bot_secret_name, "us-east-1")
+    secrets = get_secret_ssm_layer(bot_secret_name)
 
     # Disambiguate the secrets with json lookups
     secrets_json = json.loads(secrets)
@@ -511,7 +535,7 @@ if __name__ == "__main__":
     print("🚀 Local server starting starting")
 
     # Fetch secret package
-    secrets = get_secret(bot_secret_name, "us-east-1")
+    secrets = get_secret_with_client(bot_secret_name, "us-east-1")
 
     # Disambiguate the secrets with json lookups
     secrets_json = json.loads(secrets)
