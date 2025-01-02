@@ -29,13 +29,14 @@ from slack_bolt.adapter.aws_lambda import SlackRequestHandler
 model_id = 'anthropic.claude-3-5-sonnet-20241022-v2:0'
 anthropic_version = "bedrock-2023-05-31"
 temperature = 0.2
+
+# Secrets manager secret name. Json payload should contain SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET
 bot_secret_name = "DEVOPSBOT_SECRETS_JSON"
+
+# Guardrail information
 enable_guardrails = False # Won't use guardrails if False
 guardrailIdentifier = "xxxxxxxxxx"
 guardrailVersion = "DRAFT"
-
-# Enable logging
-#logging.basicConfig(level=logging.DEBUG)
 
 # Specify the AWS region for the AI model
 model_region_name = "us-west-2"
@@ -115,12 +116,31 @@ def create_bedrock_client(region_name):
 
 
 # Initializes the slack app with the bot token and socket mode handler
-def create_app(token, signing_secret):
-    return App(
+def register_slack_app(token, signing_secret):
+    app = App(
         process_before_response=True,  # Required for AWS Lambda
         token=token,
         signing_secret=signing_secret,
     )
+    
+    # Find the bot name
+    bot_info = requests.get(
+        "https://slack.com/api/auth.test",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    
+    bot_info_json = bot_info.json()    
+    if bot_info_json.get("ok"):
+        bot_name = bot_info_json.get("user")
+        slack_team = bot_info_json.get("team")
+        print(f"🚀 Successfully registered as bot, can be tagged with @{bot_name} from slack @{slack_team}")
+    else:
+        print("Failed to retrieve bot name:", bot_info_json.get("error"))
+        # Exit with error
+        raise Exception("Failed to retrieve bot name:", bot_info_json.get("error"))
+    
+    # Return the app
+    return app, bot_name
 
 
 # Function to handle ai request input and response
@@ -202,23 +222,52 @@ def build_conversation_content(payload, token):
     # Initialize unsupported file type found canary var
     unsupported_file_type_found = False
 
+    # Debug 
+    if os.environ.get("VERA_DEBUG", "False") == "True":
+        print("🚀 Conversation content payload:", payload)
+    
     # Initialize the content array
     content = []
 
-    # Identify the user's ID
-    user_id = payload["user"]
+    # Check if message is from a bot 
+    if "bot_id" in payload:
+        # User is a bot
+        pronouns = "it"
+        try:
+            # Try to find the username of the bot
+            speaker_name = payload["username"]
+        except:
+            # If no username, use bot_profile name
+            speaker_name = payload["bot_profile"]["name"]
+    
+    # User is a real human
+    else:
+        # Identify the user's ID
+        user_id = payload["user"]
 
-    # Find the user's information
-    user_info = requests.get(
-        f"https://slack.com/api/users.info?user={user_id}",
-        headers={"Authorization": "Bearer " + token},
-    )
-
-    # Identify the user's real name
-    user_info_json = user_info.json()
-    user_real_name = user_info_json["user"]["real_name"]
-
-    # TODO: Add support for pronouns, if returned in user payload. For now, everyone is nonbinary
+        # Find the user's information
+        user_info = requests.get(
+            f"https://slack.com/api/users.info?user={user_id}",
+            headers={"Authorization": "Bearer " + token},
+        )
+        
+        # Encode as json
+        user_info_json = user_info.json()
+        
+        # Debug 
+        if os.environ.get("VERA_DEBUG", "False") == "True":
+            print("🚀 Conversation content user info:", user_info_json)
+    
+        # Identify the user's real name
+        user_real_name = user_info_json["user"]["real_name"]
+        speaker_name = user_real_name
+        
+        # Find the user's pronouns if they're set in slack
+        try:
+            pronouns = user_info_json["user"]["profile"]["pronouns"]
+        except:
+            # If user doesn't have pronouns set, use they/them
+            pronouns = "they/them"
 
     # If text is not empty, and text length is greater than 0, append to content array
     if "text" in payload and len(payload["text"]) > 1:
@@ -230,9 +279,28 @@ def build_conversation_content(payload, token):
             {
                 "type": "text",
                 # Combine the user's name with the text to help the model understand who is speaking
-                "text": f"{user_real_name} says: {payload['text']}",
+                "text": f"{speaker_name} ({pronouns}) says: {payload['text']}",
             }
         )
+    
+    if "attachments" in payload:
+        # Append the attachment text to the content array
+        for attachment in payload["attachments"]:
+            
+            # If debug variable is set to true, print the text found in the attachments
+            if os.environ.get("VERA_DEBUG", "False") == "True" and "text" in attachment:
+                print("🚀 Text found in attachment: " + attachment["text"])
+                                                                           
+            # Check if the attachment contains text
+            if "text" in attachment:
+                # Append the attachment text to the content array
+                content.append(
+                    {
+                        "type": "text",
+                        # Combine the user's name with the text to help the model understand who is speaking
+                        "text": f"{speaker_name} ({pronouns}) says: " + attachment["text"],
+                    }
+                )
 
     # If the payload contains files, iterate through them
     if "files" in payload:
@@ -290,11 +358,11 @@ def build_conversation_content(payload, token):
                 continue
 
     # Return
-    return content, unsupported_file_type_found
+    return speaker_name, content, unsupported_file_type_found
 
 
 # Common function to handle both DMs and app mentions
-def handle_message_event(client, body, say, bedrock_client, app, token):
+def handle_message_event(client, body, say, bedrock_client, app, token, bot_name):
 
     user_id = body["event"]["user"]
     event = body["event"]
@@ -318,7 +386,7 @@ def handle_message_event(client, body, say, bedrock_client, app, token):
         for message in messages["messages"]:
 
             # Build the content array
-            thread_conversation_content, unsupported_file_type_found = (
+            speaker_name, thread_conversation_content, unsupported_file_type_found = (
                 build_conversation_content(message, token)
             )
 
@@ -329,9 +397,9 @@ def handle_message_event(client, body, say, bedrock_client, app, token):
             if thread_conversation_content != []:
                 # Conversation content is not empty, append to conversation
 
-                # Check if message came from the bot
-                # We're assuming the bot only generates text content, which is true of Claude v3.5 Sonnet v2
-                if "bot_id" in message:
+                # Check if message came from our bot
+                # We're assuming our bot only generates text content, which is true of Claude v3.5 Sonnet v2
+                if speaker_name == bot_name:
                     conversation.append(
                         {
                             "role": "assistant",
@@ -356,7 +424,7 @@ def handle_message_event(client, body, say, bedrock_client, app, token):
                         )
 
     # Build the user's part of the conversation
-    user_conversation_content, unsupported_file_type_found = build_conversation_content(
+    speaker_name, user_conversation_content, unsupported_file_type_found = build_conversation_content(
         event, token
     )
 
@@ -504,7 +572,7 @@ def lambda_handler(event, context):
 
     # Register the Slack handler
     print("🚀 Registering the Slack handler")
-    app = create_app(token, signing_secret)
+    app, bot_name = register_slack_app(token, signing_secret)
 
     # Register the AWS Bedrock AI client
     print("🚀 Registering the AWS Bedrock client")
@@ -514,13 +582,13 @@ def lambda_handler(event, context):
     @app.event("app_mention")
     def handle_app_mention_events(client, body, say):
         print("🚀 Handling app mention event")
-        handle_message_event(client, event_body, say, bedrock_client, app, token)
+        handle_message_event(client, event_body, say, bedrock_client, app, token, bot_name)
 
     # Respond to file share events
     @app.event("message")
     def handle_message_events(client, body, say, req):
         print("🚀 Handling message event")
-        handle_message_event(client, event_body, say, bedrock_client, app, token)
+        handle_message_event(client, event_body, say, bedrock_client, app, token, bot_name)
 
     # Initialize the handler
     print("🚀 Initializing the handler")
@@ -544,7 +612,7 @@ if __name__ == "__main__":
 
     # Register the Slack handler
     print("🚀 Registering the Slack handler")
-    app = create_app(token, signing_secret)
+    app, bot_name = register_slack_app(token, signing_secret)
 
     # Register the AWS Bedrock AI client
     print("🚀 Registering the AWS Bedrock client")
@@ -560,7 +628,7 @@ if __name__ == "__main__":
             )
 
         # Handle request
-        handle_message_event(client, body, say, bedrock_client, app, token)
+        handle_message_event(client, body, say, bedrock_client, app, token, bot_name)
 
     # Respond to file share events
     @app.event("message")
@@ -572,11 +640,11 @@ if __name__ == "__main__":
             )
 
         # Handle request
-        handle_message_event(client, body, say, bedrock_client, app, token)
+        handle_message_event(client, body, say, bedrock_client, app, token, bot_name)
 
     # Start the app in websocket mode for local development
     # Will require a separate terminal to run ngrok, e.g.: ngrok http http://localhost:3000
-    print("🚀 Starting the app")
+    print("🚀 Starting the slack app listener")
     app.start(
         port=int(os.environ.get("PORT", 3000)),
     )
