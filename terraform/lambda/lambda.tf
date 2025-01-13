@@ -47,9 +47,9 @@ resource "aws_iam_role" "DevOpsBotIamRole" {
   assume_role_policy = data.aws_iam_policy_document.DevOpsBotIamRole_assume_role.json
 }
 
-resource "aws_iam_role_policy" "DevOpsBotSlackTrigger_ReadSecrets" {
+resource "aws_iam_role_policy" "DevOpsBotSlack_ReadSecret" {
   name = "ReadSecret"
-  role = aws_iam_role.DevOpsBotIamRole.id
+  role = aws_iam_role.Ue1TiDevOpsBotRole.id
 
   policy = jsonencode(
     {
@@ -71,19 +71,41 @@ resource "aws_iam_role_policy" "DevOpsBotSlackTrigger_ReadSecrets" {
           "Effect" : "Allow",
           "Action" : "secretsmanager:ListSecrets",
           "Resource" : "*"
-        },
-        # Grant permission to invoke bedrock models of any type in us-west-2 region. Cannot specify account ID
+        }
+      ]
+    }
+  )
+}
+
+resource "aws_iam_role_policy" "DevOpsBotSlack_Bedrock" {
+  name = "Bedrock"
+  role = aws_iam_role.Ue1TiDevOpsBotRole.id
+
+  policy = jsonencode(
+    {
+      "Version" : "2012-10-17",
+      "Statement" : [
+        # Grant permission to invoke bedrock models of any type in us-west-2 region
         {
           "Effect" : "Allow",
           "Action" : "bedrock:InvokeModel",
           "Resource" : "arn:aws:bedrock:us-west-2::foundation-model/*"
         },
-        # Grant permission to invoke bedrock guardrails of any type in us-west-2 region. Must specify account ID
+        # Grant permission to invoke bedrock guardrails of any type in us-west-2 region
         {
           "Effect" : "Allow",
           "Action" : "bedrock:ApplyGuardrail",
           "Resource" : "arn:aws:bedrock:us-west-2:${data.aws_caller_identity.current.account_id}:guardrail/*"
-        }
+        },
+        # Grant permissions to use knowledge bases in us-west-2 region
+        {
+          "Effect" : "Allow",
+          "Action" : [
+            "bedrock:Retrieve",
+            "bedrock:RetrieveAndGenerate",
+          ],
+          "Resource" : "arn:aws:bedrock:us-west-2:${data.aws_caller_identity.current.account_id}:knowledge-base/*"
+        },
       ]
     }
   )
