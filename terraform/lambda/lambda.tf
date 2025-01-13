@@ -187,7 +187,7 @@ resource "aws_lambda_function" "devopsbot_slack" {
   layers = [
     # This layer permits us to ingest secrets from Secrets Manager
     "arn:aws:lambda:us-east-1:${data.aws_caller_identity.current.id}:layer:AWS-Parameters-and-Secrets-Lambda-Extension-Arm64:12",
-    
+
     # Slack bolt layer to support slack app
     aws_lambda_layer_version.slack_bolt.arn,
   ]
@@ -209,10 +209,15 @@ resource "aws_lambda_function_url" "DevOpsBot_Slack_Trigger_FunctionUrl" {
   qualifier          = aws_lambda_alias.devopsbot_alias.name
 }
 
+# Print the URL we can use to trigger the bot
+output "DevOpsBot_Slack_Trigger_FunctionUrl" {
+  value = aws_lambda_function_url.DevOpsBot_Slack_Trigger_FunctionUrl.function_url
+}
+
 # Provisioned concurrency to improve response speed
 # Points at $LATEST unless assigned to an alias, which we are doing here with "qualifier"
-resource "aws_lambda_provisioned_concurrency_config" "devopsbot_slack_concurrency" {
-  function_name                     = aws_lambda_function.devopsbot_slack.function_name
-  provisioned_concurrent_executions = 5
-  qualifier                         = aws_lambda_alias.devopsbot_alias.name
-}
+# resource "aws_lambda_provisioned_concurrency_config" "devopsbot_slack_concurrency" {
+#   function_name                     = aws_lambda_function.devopsbot_slack.function_name
+#   provisioned_concurrent_executions = 5
+#   qualifier                         = aws_lambda_alias.devopsbot_alias.name
+# }
