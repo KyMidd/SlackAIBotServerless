@@ -351,6 +351,27 @@ def build_conversation_content(payload, token):
                     }
                 )
 
+            # Support plaintext snippets
+            elif file["mimetype"] in ["text/plain"]:
+                # File is a supported type
+                snippet_file_url = file["url_private_download"]
+
+                # Fetch the file and continue
+                snippet_file_object = requests.get(
+                    snippet_file_url, headers={"Authorization": "Bearer " + token}
+                )
+                
+                # Decode the file into plaintext
+                snippet_text = snippet_file_object.content.decode("utf-8")
+
+                # Append the file to the content array
+                content.append(
+                    {
+                        "type": "text",
+                        "text": f"{speaker_name} ({pronouns}) attached a snippet of text:\n\n{snippet_text}",
+                    }
+                )
+            
             # If the mime type is not supported, set unsupported_file_type_found to True
             else:
                 print(f"Unsupported file type found: {file['mimetype']}")
@@ -546,18 +567,18 @@ def lambda_handler(event, context):
     # Isolate body
     event_body = isolate_event_body(event)
 
-    # Check for duplicate event or trash messages, return 200 and exit if detected
-    if check_for_duplicate_event(event["headers"], event_body["event"]):
-        return generate_response(
-            200, "❌ Detected a re-send or edited message, exiting"
-        )
-
     # Special challenge event for Slack. If receive a challenge request, immediately return the challenge
     if "challenge" in event_body:
         return {
             "statusCode": 200,
             "body": json.dumps({"challenge": event_body["challenge"]}),
         }
+
+    # Check for duplicate event or trash messages, return 200 and exit if detected
+    if check_for_duplicate_event(event["headers"], event_body["event"]):
+        return generate_response(
+            200, "❌ Detected a re-send or edited message, exiting"
+        )
 
     # Print the event
     print("🚀 Event:", event)
@@ -596,7 +617,7 @@ def lambda_handler(event, context):
     return slack_handler.handle(event, context)
 
 
-# Main function
+# Main function, primarily for local development
 if __name__ == "__main__":
 
     # Run in local development mode
