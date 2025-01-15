@@ -569,6 +569,7 @@ def lambda_handler(event, context):
 
     # Special challenge event for Slack. If receive a challenge request, immediately return the challenge
     if "challenge" in event_body:
+        print("🚀 Challenge event detected, returning challenge and exiting")
         return {
             "statusCode": 200,
             "body": json.dumps({"challenge": event_body["challenge"]}),
