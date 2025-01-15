@@ -215,6 +215,12 @@ resource "aws_lambda_function" "devopsbot_slack" {
   ]
 
   source_code_hash = data.archive_file.devopsbot_slack_trigger_lambda.output_base64sha256
+
+  environment {
+    variables = {
+      VERA_DEBUG = "True"
+    }
+  }
 }
 
 # Publish alias of new version
