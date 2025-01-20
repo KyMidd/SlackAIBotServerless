@@ -14,6 +14,7 @@ import boto3
 import json
 import base64
 import requests
+import re
 
 # Slack app imports
 from slack_bolt import App
