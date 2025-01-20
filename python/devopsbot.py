@@ -38,6 +38,11 @@ enable_guardrails = False # Won't use guardrails if False
 guardrailIdentifier = "xxxxxxxxxx"
 guardrailVersion = "DRAFT"
 
+# Knowledge base information
+enable_knowledge_base = False
+ConfluenceKnowledgeBaseId="xxxxxxxxxx" # kyler-test-confluence
+knowledgeBaseContextNumberOfResults = 5
+
 # Specify the AWS region for the AI model
 model_region_name = "us-west-2"
 
@@ -53,6 +58,32 @@ Assistant should address the user by name.
 ###
 # Functions
 ###
+
+
+# Function to retrieve info from RAG with knowledge base
+def ask_bedrock_llm_with_knowledge_base(flat_conversation, knowledge_base_id) -> str:
+    # Create a Bedrock agent runtime client
+    bedrock_agent_runtime_client = boto3.client(
+        "bedrock-agent-runtime", 
+        region_name=model_region_name
+    )
+    
+    # uses embedding model to retrieve and generate a response
+    # Perhaps should be just doing .retrieve() here
+    response = bedrock_agent_runtime_client.retrieve(
+        retrievalQuery={
+          'text': flat_conversation
+        },
+        knowledgeBaseId=knowledge_base_id,
+        retrievalConfiguration={
+            'vectorSearchConfiguration': {
+                'numberOfResults': knowledgeBaseContextNumberOfResults,
+                #'overrideSearchType': "HYBRID", # optional, default is the KB chooses the search type
+            }
+        },
+    )
+
+    return response
 
 
 # Get GitHubPAT secret from AWS Secrets Manager that we'll use to start the githubcop workflow
@@ -124,17 +155,22 @@ def register_slack_app(token, signing_secret):
     )
     
     bot_info_json = bot_info.json()    
+    
+    if os.environ.get("VERA_DEBUG", "False") == "True":
+        print("🚀 Bot info:", bot_info_json)
+    
     if bot_info_json.get("ok"):
         bot_name = bot_info_json.get("user")
+        registered_bot_id = bot_info_json.get("bot_id")
         slack_team = bot_info_json.get("team")
-        print(f"🚀 Successfully registered as bot, can be tagged with @{bot_name} from slack @{slack_team}")
+        print(f"🚀 Successfully registered as bot, can be tagged with @{bot_name} ({registered_bot_id}) from slack @{slack_team}")
     else:
         print("Failed to retrieve bot name:", bot_info_json.get("error"))
         # Exit with error
         raise Exception("Failed to retrieve bot name:", bot_info_json.get("error"))
     
     # Return the app
-    return app, bot_name
+    return app, registered_bot_id
 
 
 # Function to handle ai request input and response
@@ -164,6 +200,7 @@ def ai_request(bedrock_client, messages):
                 {
                     "anthropic_version": anthropic_version,
                     # "betas": ["pdfs-2024-09-25"], # This is not yet supported, https://docs.anthropic.com/en/docs/build-with-claude/pdf-support#supported-platforms-and-models
+                    "includeKnowledgeBaseResults": True,
                     "max_tokens": 1024,
                     "messages": messages,
                     "temperature": temperature,
@@ -222,17 +259,24 @@ def build_conversation_content(payload, token):
     
     # Initialize the content array
     content = []
+    
+    # Initialize pronouns as blank
+    pronouns = ""
+    
+    # Initialize bot_id as blank
+    bot_id = ""
 
     # Check if message is from a bot 
     if "bot_id" in payload:
         # User is a bot
-        pronouns = "it"
         try:
             # Try to find the username of the bot
             speaker_name = payload["username"]
+            bot_id = payload["bot_id"]
         except:
             # If no username, use bot_profile name
             speaker_name = payload["bot_profile"]["name"]
+            bot_id = payload["bot_id"]
     
     # User is a real human
     else:
@@ -258,10 +302,12 @@ def build_conversation_content(payload, token):
         
         # Find the user's pronouns if they're set in slack
         try:
-            pronouns = user_info_json["user"]["profile"]["pronouns"]
+            # If user has pronouns, set to pronouns with round brackets with a space before, like " (they/them)"
+            pronouns = f" ({user_info_json["user"]["profile"]["pronouns"]})"
         except:
-            # If user doesn't have pronouns set, use they/them
-            pronouns = "they/them"
+            # If no pronouns, use the initialized pronouns (blank)
+            if os.environ.get("VERA_DEBUG", "False") == "True":
+                print("🚀 User has no pronouns, using default of:", pronouns)
 
     # If text is not empty, and text length is greater than 0, append to content array
     if "text" in payload and len(payload["text"]) > 1:
@@ -273,7 +319,7 @@ def build_conversation_content(payload, token):
             {
                 "type": "text",
                 # Combine the user's name with the text to help the model understand who is speaking
-                "text": f"{speaker_name} ({pronouns}) says: {payload['text']}",
+                "text": f"{speaker_name}{pronouns} says: {payload['text']}",
             }
         )
     
@@ -292,7 +338,7 @@ def build_conversation_content(payload, token):
                     {
                         "type": "text",
                         # Combine the user's name with the text to help the model understand who is speaking
-                        "text": f"{speaker_name} ({pronouns}) says: " + attachment["text"],
+                        "text": f"{speaker_name}{pronouns} says: " + attachment["text"],
                     }
                 )
 
@@ -362,7 +408,7 @@ def build_conversation_content(payload, token):
                 content.append(
                     {
                         "type": "text",
-                        "text": f"{speaker_name} ({pronouns}) attached a snippet of text:\n\n{snippet_text}",
+                        "text": f"{speaker_name} {pronouns} attached a snippet of text:\n\n{snippet_text}",
                     }
                 )
             
@@ -373,13 +419,13 @@ def build_conversation_content(payload, token):
                 continue
 
     # Return
-    return speaker_name, content, unsupported_file_type_found
+    return bot_id, content, unsupported_file_type_found
 
 
 # Common function to handle both DMs and app mentions
-def handle_message_event(client, body, say, bedrock_client, app, token, bot_name):
+def handle_message_event(client, body, say, bedrock_client, app, token, registered_bot_id):
 
-    user_id = body["event"]["user"]
+    #user_id = body["event"]["user"]
     event = body["event"]
 
     # Determine the thread timestamp
@@ -401,7 +447,7 @@ def handle_message_event(client, body, say, bedrock_client, app, token, bot_name
         for message in messages["messages"]:
 
             # Build the content array
-            speaker_name, thread_conversation_content, unsupported_file_type_found = (
+            bot_id_from_message, thread_conversation_content, unsupported_file_type_found = (
                 build_conversation_content(message, token)
             )
 
@@ -414,7 +460,7 @@ def handle_message_event(client, body, say, bedrock_client, app, token, bot_name
 
                 # Check if message came from our bot
                 # We're assuming our bot only generates text content, which is true of Claude v3.5 Sonnet v2
-                if speaker_name == bot_name:
+                if bot_id_from_message == registered_bot_id:
                     conversation.append(
                         {
                             "role": "assistant",
@@ -439,7 +485,7 @@ def handle_message_event(client, body, say, bedrock_client, app, token, bot_name
                         )
 
     # Build the user's part of the conversation
-    speaker_name, user_conversation_content, unsupported_file_type_found = build_conversation_content(
+    bot_id_from_message, user_conversation_content, unsupported_file_type_found = build_conversation_content(
         event, token
     )
 
@@ -476,7 +522,52 @@ def handle_message_event(client, body, say, bedrock_client, app, token, bot_name
             thread_ts=thread_ts,
         )
         return
-
+    
+    # If enabled, fetch the confluence context from the knowledge base
+    if enable_knowledge_base:
+        print("🚀 Knowledge base enabled, fetching citations")
+        
+        if os.environ.get("VERA_DEBUG", "False") == "True":
+            print("🚀 State of conversation before AI request:", conversation)
+        
+        # Flatten the conversation into one string
+        flat_conversation = []
+        for item in conversation:
+            for content in item['content']:
+                if content['type'] == 'text':
+                    flat_conversation.append(content['text'])
+        flat_conversation = '\n'.join(flat_conversation)
+        
+        # On each conversation line, remove all text before the first colon. It appears the names and pronouns really throw off our context quality
+        flat_conversation = re.sub(r".*: ", "", flat_conversation)
+        
+        if os.environ.get("VERA_DEBUG", "False") == "True":
+            print(f"🚀 Flat conversation: {flat_conversation}")
+        
+        # Get context data from the knowledge base
+        knowledge_base_response = ask_bedrock_llm_with_knowledge_base(flat_conversation, ConfluenceKnowledgeBaseId)
+        
+        if os.environ.get("VERA_DEBUG", "False") == "True":
+            print(f"🚀 Knowledge base response: {knowledge_base_response}")
+        
+        # Iterate through responses
+        for result in knowledge_base_response["retrievalResults"]:
+            citation_result = result['content']['text']
+            citation_url = result['location']['confluenceLocation']['url']
+            
+            # Append to conversation
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"Knowledge base citation to supplement your answer: {citation_result} from URL {citation_url}",
+                        }
+                    ],
+                }
+            )
+    
     # Call the AI model with the conversation
     if os.environ.get("VERA_DEBUG", "False") == "True":
         print("🚀 State of conversation before AI request:", conversation)
@@ -588,7 +679,7 @@ def lambda_handler(event, context):
 
     # Register the Slack handler
     print("🚀 Registering the Slack handler")
-    app, bot_name = register_slack_app(token, signing_secret)
+    app, registered_bot_id = register_slack_app(token, signing_secret)
 
     # Register the AWS Bedrock AI client
     print("🚀 Registering the AWS Bedrock client")
@@ -598,13 +689,13 @@ def lambda_handler(event, context):
     @app.event("app_mention")
     def handle_app_mention_events(client, body, say):
         print("🚀 Handling app mention event")
-        handle_message_event(client, event_body, say, bedrock_client, app, token, bot_name)
+        handle_message_event(client, event_body, say, bedrock_client, app, token, registered_bot_id)
 
     # Respond to file share events
     @app.event("message")
     def handle_message_events(client, body, say, req):
         print("🚀 Handling message event")
-        handle_message_event(client, event_body, say, bedrock_client, app, token, bot_name)
+        handle_message_event(client, event_body, say, bedrock_client, app, token, registered_bot_id)
 
     # Initialize the handler
     print("🚀 Initializing the handler")
@@ -628,7 +719,7 @@ if __name__ == "__main__":
 
     # Register the Slack handler
     print("🚀 Registering the Slack handler")
-    app, bot_name = register_slack_app(token, signing_secret)
+    app, registered_bot_id = register_slack_app(token, signing_secret)
 
     # Register the AWS Bedrock AI client
     print("🚀 Registering the AWS Bedrock client")
@@ -644,7 +735,7 @@ if __name__ == "__main__":
             )
 
         # Handle request
-        handle_message_event(client, body, say, bedrock_client, app, token, bot_name)
+        handle_message_event(client, body, say, bedrock_client, app, token, registered_bot_id)
 
     # Respond to file share events
     @app.event("message")
@@ -656,7 +747,7 @@ if __name__ == "__main__":
             )
 
         # Handle request
-        handle_message_event(client, body, say, bedrock_client, app, token, bot_name)
+        handle_message_event(client, body, say, bedrock_client, app, token, registered_bot_id)
 
     # Start the app in websocket mode for local development
     # Will require a separate terminal to run ngrok, e.g.: ngrok http http://localhost:3000
