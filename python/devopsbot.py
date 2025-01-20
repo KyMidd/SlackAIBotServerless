@@ -200,7 +200,6 @@ def ai_request(bedrock_client, messages):
                 {
                     "anthropic_version": anthropic_version,
                     # "betas": ["pdfs-2024-09-25"], # This is not yet supported, https://docs.anthropic.com/en/docs/build-with-claude/pdf-support#supported-platforms-and-models
-                    "includeKnowledgeBaseResults": True,
                     "max_tokens": 1024,
                     "messages": messages,
                     "temperature": temperature,
