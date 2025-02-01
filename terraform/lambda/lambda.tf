@@ -49,7 +49,7 @@ resource "aws_iam_role" "DevOpsBotIamRole" {
 
 resource "aws_iam_role_policy" "DevOpsBotSlack_ReadSecret" {
   name = "ReadSecret"
-  role = aws_iam_role.Ue1TiDevOpsBotRole.id
+  role = aws_iam_role.DevOpsBotRole.id
 
   policy = jsonencode(
     {
@@ -79,7 +79,7 @@ resource "aws_iam_role_policy" "DevOpsBotSlack_ReadSecret" {
 
 resource "aws_iam_role_policy" "DevOpsBotSlack_Bedrock" {
   name = "Bedrock"
-  role = aws_iam_role.Ue1TiDevOpsBotRole.id
+  role = aws_iam_role.DevOpsBotRole.id
 
   policy = jsonencode(
     {
