@@ -70,7 +70,6 @@ def ask_bedrock_llm_with_knowledge_base(flat_conversation, knowledge_base_id) ->
     )
     
     # uses embedding model to retrieve and generate a response
-    # Perhaps should be just doing .retrieve() here
     response = bedrock_agent_runtime_client.retrieve(
         retrievalQuery={
           'text': flat_conversation
