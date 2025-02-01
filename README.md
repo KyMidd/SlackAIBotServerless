@@ -5,8 +5,9 @@ This repo contains the source files to build a fully functional and interactive 
 This code is discussed at length on LetsDoDevOps.com, you can find the articles here: 
 - [Part 1: Covers how to build a slack bot in websocket mode](https://www.letsdodevops.com/p/lets-do-devops-building-an-azure)
 - [Part 2: How to deploy an AWS Bedrock AI resource and connect to it to ask a request locally from your terminal with python3](https://www.letsdodevops.com/p/lets-do-devops-building-a-slack-bot)
-- Part 3: We’ll connect our slack bot with Bedrock locally using python3 with ngrok so slack users can have conversations with AI (link coming when published)
-- Part 4: How to convert your local script to an event-driven serverless, cloud-based app in AWS Lambda (link coming when published)
+- Part 3: [We’ll connect our slack bot with Bedrock locally using python3 with ngrok so slack users can have conversations with AI](https://www.letsdodevops.com/p/lets-do-devops-building-a-slack-bot-40c)
+- Part 4: [How to convert your local script to an event-driven serverless, cloud-based app in AWS Lambda](https://www.letsdodevops.com/p/building-a-slack-bot-part-4-serverless-with-lambda)
+- Part 5: [Building a RAG Knowledge Base of an entire Confluence wiki, and teaching our Slack Bot to Read it in Real-Time](https://www.letsdodevops.com/p/building-a-slack-bot-with-ai-capabilities)
 
 # Architecture
 
@@ -40,9 +41,7 @@ Lambda can spin up hundreds of concurrencies without much effort, so monitoring 
 
 Assuming 100 requests per week (will depend on your biz size, use) that take ~10 seconds total (assuming on the high end)
 Lambda cost: $0.03 / month
-Lambda concurrency (running 5 concurrencies constantly): ~22/month
+
 AI cost (depends on request complexity), assuming 1k tokens per request: $3.20/month
 
-Total cost for 100 requests per week of moderate complexity is: ~$25
-
-You could easily cut down on concurrency, or remove it altogether. Responses would be slightly slower (3-5 seconds slower-ish), and you'd save $22/month. I don't recommend, folks love and will use fast services, and hate slow services no matter how amazing. 
+Bedrock Knowledge Bases are expensive. Though they're "serverless", they don't spin down to $0. Instead, they spin down to about ~$60/day, or about $1.8k/month. That's a lot! You can work with AWS Support to turn off "vector preload" setting on the OpenSearch serverless instances, which brings the cost down significantly - to around $35/day, or just over $1k/month. That's still a lot, but way more reasonable than $25k/yr. 
