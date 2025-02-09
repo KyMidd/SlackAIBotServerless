@@ -64,15 +64,10 @@ Assistant should always provide a Confluence citation link when providing inform
 
 
 # Function to retrieve info from RAG with knowledge base
-def ask_bedrock_llm_with_knowledge_base(flat_conversation, knowledge_base_id) -> str:
-    # Create a Bedrock agent runtime client
-    bedrock_agent_runtime_client = boto3.client(
-        "bedrock-agent-runtime", 
-        region_name=model_region_name
-    )
+def ask_bedrock_llm_with_knowledge_base(flat_conversation, knowledge_base_id, bedrock_client) -> str:
     
     # uses embedding model to retrieve and generate a response
-    response = bedrock_agent_runtime_client.retrieve(
+    response = bedrock_client.retrieve(
         retrievalQuery={
           'text': flat_conversation
         },
@@ -623,7 +618,7 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
             print(f"🚀 Flat conversation: {flat_conversation}")
         
         # Get context data from the knowledge base
-        knowledge_base_response = ask_bedrock_llm_with_knowledge_base(flat_conversation, ConfluenceKnowledgeBaseId)
+        knowledge_base_response = ask_bedrock_llm_with_knowledge_base(flat_conversation, ConfluenceKnowledgeBaseId, bedrock_client)
         
         if os.environ.get("VERA_DEBUG", "False") == "True":
             print(f"🚀 Knowledge base response: {knowledge_base_response}")
