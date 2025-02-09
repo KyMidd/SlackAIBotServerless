@@ -30,6 +30,7 @@ from slack_bolt.adapter.aws_lambda import SlackRequestHandler
 model_id = 'anthropic.claude-3-5-sonnet-20241022-v2:0'
 anthropic_version = "bedrock-2023-05-31"
 temperature = 0.2
+top_k = 25
 
 # Secrets manager secret name. Json payload should contain SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET
 bot_secret_name = "DEVOPSBOT_SECRETS_JSON"
@@ -63,9 +64,15 @@ Assistant should always provide a Confluence citation link when providing inform
 
 
 # Function to retrieve info from RAG with knowledge base
-def ask_bedrock_llm_with_knowledge_base(flat_conversation, knowledge_base_id, bedrock_client) -> str:
+def ask_bedrock_llm_with_knowledge_base(flat_conversation, knowledge_base_id) -> str:
+    # Create a Bedrock agent runtime client
+    bedrock_agent_runtime_client = boto3.client(
+        "bedrock-agent-runtime", 
+        region_name=model_region_name
+    )
+    
     # uses embedding model to retrieve and generate a response
-    response = bedrock_client.retrieve(
+    response = bedrock_agent_runtime_client.retrieve(
         retrievalQuery={
           'text': flat_conversation
         },
@@ -73,7 +80,6 @@ def ask_bedrock_llm_with_knowledge_base(flat_conversation, knowledge_base_id, be
         retrievalConfiguration={
             'vectorSearchConfiguration': {
                 'numberOfResults': knowledgeBaseContextNumberOfResults,
-                #'overrideSearchType': "HYBRID", # optional, default is the KB chooses the search type
             }
         },
     )
@@ -170,38 +176,76 @@ def register_slack_app(token, signing_secret):
 
 # Function to handle ai request input and response
 def ai_request(bedrock_client, messages):
+        
+    # Format model system prompt for the request
+    model_prompt = [
+        {
+            "text": model_guidance
+        }
+    ]
+    
+    # Base inference parameters to use.
+    inference_config = {
+        "temperature": temperature
+    }
+    
+    # Additional inference parameters to use.
+    additional_model_fields = {
+        "top_k": top_k
+    }
+        
     # If enable_guardrails is set to True, include guardrailIdentifier and guardrailVersion in the request
     if enable_guardrails:
-        response = bedrock_client.invoke_model(
-            modelId=model_id,
-            guardrailIdentifier=guardrailIdentifier,
-            guardrailVersion=guardrailVersion,
-            body=json.dumps(
-                {
-                    "anthropic_version": anthropic_version,
-                    # "betas": ["pdfs-2024-09-25"], # This is not yet supported, https://docs.anthropic.com/en/docs/build-with-claude/pdf-support#supported-platforms-and-models
-                    "max_tokens": 1024,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "system": model_guidance,
-                }
-            ),
-        )
-    # If enable_guardrails is set to False, do not include guardrailIdentifier and guardrailVersion in the request
+        
+        # Try to make the request
+        try:
+            response = bedrock_client.converse(
+                modelId=model_id,
+                guardrailConfig={
+                    "guardrailIdentifier": guardrailIdentifier,
+                    "guardrailVersion": guardrailVersion,
+                },
+                messages=messages,
+                system=model_prompt,
+                inferenceConfig=inference_config,
+                additionalModelRequestFields=additional_model_fields
+            )
+            # Find the response text
+            response = response["output"]["message"]["content"][0]["text"]
+        except Exception as error:
+            # If the request fails, print the error
+            print(f"🚀 Error making request to Bedrock: {error}")
+            
+            # Clean up error message, grab everything after the first :
+            error = str(error).split(":", 1)[1]
+            
+            # Return error as response
+            response = "😔 Error with request: " + str(error)
+             
+        # If enable_guardrails is set to False, do not include guardrailIdentifier and guardrailVersion in the request
     else:
-        response = bedrock_client.invoke_model(
-            modelId=model_id,
-            body=json.dumps(
-                {
-                    "anthropic_version": anthropic_version,
-                    # "betas": ["pdfs-2024-09-25"], # This is not yet supported, https://docs.anthropic.com/en/docs/build-with-claude/pdf-support#supported-platforms-and-models
-                    "max_tokens": 1024,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "system": model_guidance,
-                }
-            ),
-        )
+        # Try to make the request
+        try:
+            response = bedrock_client.converse(
+                modelId=model_id,
+                messages=messages,
+                system=model_prompt,
+                inferenceConfig=inference_config,
+                additionalModelRequestFields=additional_model_fields
+            )
+            # Find the response text
+            response = response["output"]["message"]["content"][0]["text"]
+        except Exception as error:
+            # If the request fails, print the error
+            print(f"🚀 Error making request to Bedrock: {error}")
+            
+            # Clean up error message, grab everything after the first :
+            error = str(error).split(":", 1)[1]
+            
+            # Return error as response
+            response = "😔 Error with request: " + str(error)
+    
+    # Return the response
     return response
 
 
@@ -311,7 +355,6 @@ def build_conversation_content(payload, token):
 
         content.append(
             {
-                "type": "text",
                 # Combine the user's name with the text to help the model understand who is speaking
                 "text": f"{speaker_name}{pronouns} says: {payload['text']}",
             }
@@ -330,7 +373,6 @@ def build_conversation_content(payload, token):
                 # Append the attachment text to the content array
                 content.append(
                     {
-                        "type": "text",
                         # Combine the user's name with the text to help the model understand who is speaking
                         "text": f"{speaker_name}{pronouns} says: " + attachment["text"],
                     }
@@ -342,49 +384,94 @@ def build_conversation_content(payload, token):
         # Append the payload files to the content array
         for file in payload["files"]:
 
-            # Check the mime type of the file is a supported file type
-            # Commenting out the PDF check until the PDF beta is enabled on bedrock
-            # if file["mimetype"] in ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']:
+            # Debug
+            if os.environ.get("VERA_DEBUG", "False") == "True":
+                print("🚀 File found in payload:", file)
+                
+            # Isolate name of the file and remove characters before the final period
+            file_name = file["name"].split(".")[0]
+            
+            # File is a supported type
+            file_url = file["url_private_download"]
+
+            # Fetch the file and continue
+            file_object = requests.get(
+                file_url, headers={"Authorization": "Bearer " + token}
+            )
+
+            # Decode object into binary file
+            file_content = file_object.content
+            
+            # Check the mime type of the file is a supported image file type
             if file["mimetype"] in [
-                "image/png",
-                "image/jpeg",
-                "image/gif",
-                "image/webp",
+                "image/png", # png
+                "image/jpeg", # jpeg
+                "image/gif", # gif
+                "image/webp", # webp
             ]:
-                # File is a supported type
-                file_url = file["url_private_download"]
-
-                # Fetch the file and continue
-                file_object = requests.get(
-                    file_url, headers={"Authorization": "Bearer " + token}
-                )
-
-                # Encode the image with base64
-                encoded_file = base64.b64encode(file_object.content).decode("utf-8")
-
-                # Identify the mime type of the file, some require different file types when sending to the model
-                if file["mimetype"] in [
-                    "image/png",
-                    "image/jpeg",
-                    "image/gif",
-                    "image/webp",
-                ]:
-                    file_type = "image"
-                else:
-                    file_type = "document"
+                
+                # Isolate the file type based on the mimetype
+                file_type = file["mimetype"].split("/")[1]
 
                 # Append the file to the content array
                 content.append(
                     {
-                        "type": file_type,
-                        "source": {
-                            "type": "base64",
-                            "media_type": file["mimetype"],
-                            "data": encoded_file,
-                        },
+                        "image": {
+                            "format": file_type,
+                            "source": {
+                                "bytes": file_content,
+                            }
+                        }
                     }
                 )
 
+            # Check if file is a supported document type
+            if file["mimetype"] in [
+                "application/pdf",
+                "application/csv",
+                "application/msword",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.ms-excel",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "text/html",
+                "text/markdown",
+            ]:
+                
+                # Isolate the file type based on the mimetype
+                if file["mimetype"] in ["application/pdf"]:
+                    file_type = "pdf"
+                elif file["mimetype"] in ["application/csv"]:
+                    file_type = "csv"
+                elif file["mimetype"] in ["application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]:
+                    file_type = "docx"
+                elif file["mimetype"] in ["application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]:
+                    file_type = "xlsx"
+                elif file["mimetype"] in ["text/html"]:
+                    file_type = "html"
+                elif file["mimetype"] in ["text/markdown"]:
+                    file_type = "markdown"
+
+                # Append the file to the content array
+                content.append(
+                    {
+                        "document": {
+                            "format": file_type,
+                            "name": file_name,
+                            "source": {
+                                "bytes": file_content,
+                            }
+                        }
+                    }
+                )
+                
+                # Append the required text to the content array
+                content.append(
+                    {
+                        #"text": "This file is named " + file_name + " and is a " + file_type + " document.",
+                        "text": "file",
+                    }
+                )
+            
             # Support plaintext snippets
             elif file["mimetype"] in ["text/plain"]:
                 # File is a supported type
@@ -401,7 +488,6 @@ def build_conversation_content(payload, token):
                 # Append the file to the content array
                 content.append(
                     {
-                        "type": "text",
                         "text": f"{speaker_name} {pronouns} attached a snippet of text:\n\n{snippet_text}",
                     }
                 )
@@ -460,7 +546,6 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
                             "role": "assistant",
                             "content": [
                                 {
-                                    "type": "text",
                                     "text": message["text"],
                                 }
                             ],
@@ -469,7 +554,10 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
                 # If not, the message came from a user
                 else:
                     conversation.append(
-                        {"role": "user", "content": thread_conversation_content}
+                        {
+                            "role": "user",
+                            "content": thread_conversation_content
+                        }
                     )
 
                     if os.environ.get("VERA_DEBUG", "False") == "True":
@@ -478,19 +566,15 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
                             conversation,
                         )
 
-    # Build the user's part of the conversation
-    bot_id_from_message, user_conversation_content, unsupported_file_type_found = build_conversation_content(
-        event, token
-    )
+    # Check if the conversation is empty. If yes, we're not in a thread, and we need to build the conversation from the event
+    if conversation == []:
 
-    if os.environ.get("VERA_DEBUG", "False") == "True":
-        print("🚀 User conversation content:", user_conversation_content)
-
-    # Check if the thread conversation content is empty. This happens when a user sends an unsupported doc type only, with no message
-    if user_conversation_content != []:
-        # Conversation content is not empty, append to conversation
-
-        # Append the user's prompt to the conversation
+        # Build the user's part of the conversation
+        bot_id_from_message, user_conversation_content, unsupported_file_type_found = build_conversation_content(
+            event, token
+        )
+        
+        # Append to the conversation
         conversation.append(
             {
                 "role": "user",
@@ -502,7 +586,7 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
             print("🚀 State of conversation after append user's prompt:", conversation)
 
     # Check if conversation content is empty, this happens when a user sends an unsupported doc type only, with no message
-    # Conversation looks like this: [{'role': 'user', 'content': []}]
+    # Conversation looks like this: [{'role': 'user', 'text': []}]
     if os.environ.get("VERA_DEBUG", "False") == "True":
         print("🚀 State of conversation before check if convo is empty:", conversation)
     if conversation == []:
@@ -528,7 +612,7 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
         flat_conversation = []
         for item in conversation:
             for content in item['content']:
-                if content['type'] == 'text':
+                if 'text' in content:
                     flat_conversation.append(content['text'])
         flat_conversation = '\n'.join(flat_conversation)
         
@@ -539,7 +623,7 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
             print(f"🚀 Flat conversation: {flat_conversation}")
         
         # Get context data from the knowledge base
-        knowledge_base_response = ask_bedrock_llm_with_knowledge_base(flat_conversation, ConfluenceKnowledgeBaseId, bedrock_client)
+        knowledge_base_response = ask_bedrock_llm_with_knowledge_base(flat_conversation, ConfluenceKnowledgeBaseId)
         
         if os.environ.get("VERA_DEBUG", "False") == "True":
             print(f"🚀 Knowledge base response: {knowledge_base_response}")
@@ -555,7 +639,6 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
                     "role": "user",
                     "content": [
                         {
-                            "type": "text",
                             "text": f"Knowledge base citation to supplement your answer: {citation_result} from URL {citation_url}",
                         }
                     ],
@@ -565,28 +648,7 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
     # Call the AI model with the conversation
     if os.environ.get("VERA_DEBUG", "False") == "True":
         print("🚀 State of conversation before AI request:", conversation)
-    response = ai_request(bedrock_client, conversation)
-
-    # Get response
-    response_body = response["body"].read().decode("utf-8")
-    if os.environ.get("VERA_DEBUG", "False") == "True":
-        print("🚀 Response body:", response_body)
-
-    # Conver to JSON
-    response_json = json.loads(response_body)
-    if os.environ.get("VERA_DEBUG", "False") == "True":
-        print("🚀 response_json['content']:", response_json["content"])
-
-    # Check if response content is empty
-    if response_json["content"] == []:
-        print("🚀 Response content is empty, setting response_text to blank")
-        response_text = ""
-    else:
-        # There is content in the response, set response_text to the text content
-        response_text = response_json.get("content", [{}])[0].get("text", "")
-
-        if os.environ.get("VERA_DEBUG", "False") == "True":
-            print("🚀 response_text:", response_text)
+    response_text = ai_request(bedrock_client, conversation)
 
     # Check if unsupported_file_type_found
     if unsupported_file_type_found == True:
@@ -645,6 +707,9 @@ def lambda_handler(event, context):
 
     # Isolate body
     event_body = isolate_event_body(event)
+    
+    # Print the event
+    print("🚀 Event:", event)
 
     # Special challenge event for Slack. If receive a challenge request, immediately return the challenge
     if "challenge" in event_body:
@@ -654,14 +719,15 @@ def lambda_handler(event, context):
             "body": json.dumps({"challenge": event_body["challenge"]}),
         }
 
+    # Debug 
+    if os.environ.get("VERA_DEBUG", "False") == "True":
+        print("🚀 Event body:", event_body)
+    
     # Check for duplicate event or trash messages, return 200 and exit if detected
     if check_for_duplicate_event(event["headers"], event_body["event"]):
         return generate_response(
             200, "❌ Detected a re-send or edited message, exiting"
         )
-
-    # Print the event
-    print("🚀 Event:", event)
 
     # Fetch secret package
     secrets = get_secret_ssm_layer(bot_secret_name)
