@@ -462,7 +462,6 @@ def build_conversation_content(payload, token):
                 # Append the required text to the content array
                 content.append(
                     {
-                        #"text": "This file is named " + file_name + " and is a " + file_type + " document.",
                         "text": "file",
                     }
                 )
