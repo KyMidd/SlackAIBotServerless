@@ -421,7 +421,7 @@ def build_conversation_content(payload, token):
                 )
 
             # Check if file is a supported document type
-            if file["mimetype"] in [
+            elif file["mimetype"] in [
                 "application/pdf",
                 "application/csv",
                 "application/msword",
@@ -559,9 +559,9 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
                             "🚀 State of conversation after threaded message append:",
                             conversation,
                         )
-
-    # Check if the conversation is empty. If yes, we're not in a thread, and we need to build the conversation from the event
-    if conversation == []:
+    
+    else:
+        # We're not in a thread, so we just need to add the user's message to the conversation
 
         # Build the user's part of the conversation
         bot_id_from_message, user_conversation_content, unsupported_file_type_found = build_conversation_content(
@@ -659,6 +659,9 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
         text=f"{response_text}",
         thread_ts=thread_ts,
     )
+    
+    # Print success
+    print("🚀 Successfully responded to message, exiting")
 
 
 # Isolate the event body from the event package
