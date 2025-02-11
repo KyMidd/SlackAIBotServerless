@@ -12,7 +12,6 @@ import os
 import logging
 import boto3
 import json
-import base64
 import requests
 import re
 
@@ -72,7 +71,7 @@ def ask_bedrock_llm_with_knowledge_base(flat_conversation, knowledge_base_id) ->
         region_name=model_region_name
     )
     
-    # uses embedding model to retrieve and generate a response
+    # Uses model to retrieve related vectors from knowledge base
     response = bedrock_agent_runtime_client.retrieve(
         retrievalQuery={
           'text': flat_conversation
@@ -175,8 +174,48 @@ def register_slack_app(token, signing_secret):
     return app, registered_bot_id
 
 
-# Function to handle ai request input and response
-def ai_request(bedrock_client, messages):
+# Receives the streaming response and updates the slack message, chunk by chunk
+def response_on_slack(client, streaming_response, initial_response, channel_id, thread_ts):
+    
+    # Print streaming response
+    if os.environ.get("VERA_DEBUG", "False") == "True":
+        print("🚀 Streaming response:", streaming_response["stream"])
+    
+    # Counter and buffer vars for streaming response
+    response = ""
+    token_counter = 0
+    buffer = ""
+    
+    # Iterate over streamed chunks
+    for chunk in streaming_response["stream"]:
+        if "contentBlockDelta" in chunk:
+            text = chunk["contentBlockDelta"]["delta"]["text"]
+            response += text
+            buffer += text
+            token_counter += 1
+            
+            if token_counter >= 10:
+                client.chat_update(
+                    text=response,
+                    channel=channel_id,
+                    ts=initial_response['ts']
+                )
+                # Every time we update to slack, we zero out the token counter and buffer
+                token_counter = 0
+                buffer = ""
+
+    # If buffer contains anything after iterating over any chunks, add it also
+    # This completes the update
+    if buffer:
+        client.chat_update(
+            text=response,
+            channel=channel_id,
+            ts=initial_response['ts']
+        )
+
+
+# Handle ai request input and response
+def ai_request(bedrock_client, messages, say, thread_ts, client, initial_response, channel_id):
         
     # Format model system prompt for the request
     model_prompt = [
@@ -194,13 +233,13 @@ def ai_request(bedrock_client, messages):
     additional_model_fields = {
         "top_k": top_k
     }
-        
+    
     # If enable_guardrails is set to True, include guardrailIdentifier and guardrailVersion in the request
     if enable_guardrails:
         
         # Try to make the request
         try:
-            response = bedrock_client.converse(
+            streaming_response = bedrock_client.converse_stream(
                 modelId=model_id,
                 guardrailConfig={
                     "guardrailIdentifier": guardrailIdentifier,
@@ -211,31 +250,38 @@ def ai_request(bedrock_client, messages):
                 inferenceConfig=inference_config,
                 additionalModelRequestFields=additional_model_fields
             )
-            # Find the response text
-            response = response["output"]["message"]["content"][0]["text"]
+            
+            # Call function to respond on slack
+            response_on_slack(client, streaming_response, initial_response, channel_id, thread_ts)
+            
         except Exception as error:
             # If the request fails, print the error
             print(f"🚀 Error making request to Bedrock: {error}")
             
             # Clean up error message, grab everything after the first :
-            error = str(error).split(":", 1)[1]
+            error = str(error).split(":")[-1].strip()
             
             # Return error as response
-            response = "😔 Error with request: " + str(error)
+            say(
+                text="😔 Error with request: " + str(error),
+                thread_ts=thread_ts,
+            )
              
-        # If enable_guardrails is set to False, do not include guardrailIdentifier and guardrailVersion in the request
+    # If enable_guardrails is set to False, do not include guardrailIdentifier and guardrailVersion in the request
     else:
         # Try to make the request
         try:
-            response = bedrock_client.converse(
+            streaming_response = bedrock_client.converse_stream(
                 modelId=model_id,
                 messages=messages,
                 system=model_prompt,
                 inferenceConfig=inference_config,
                 additionalModelRequestFields=additional_model_fields
             )
-            # Find the response text
-            response = response["output"]["message"]["content"][0]["text"]
+            
+            # Respond on slack
+            response_on_slack(client, streaming_response, initial_response, channel_id, thread_ts)
+            
         except Exception as error:
             # If the request fails, print the error
             print(f"🚀 Error making request to Bedrock: {error}")
@@ -244,10 +290,10 @@ def ai_request(bedrock_client, messages):
             error = str(error).split(":", 1)[1]
             
             # Return error as response
-            response = "😔 Error with request: " + str(error)
-    
-    # Return the response
-    return response
+            say(
+                text="😔 Error with request: " + str(error),
+                thread_ts=thread_ts,
+            )
 
 
 # Check for duplicate events
@@ -258,11 +304,16 @@ def check_for_duplicate_event(headers, payload):
         print("🚀 Headers:", headers)
         print("🚀 Payload:", payload)
 
+    # Checking for webhook when we edit our own message, which happens all the time with streaming tokens
+    if payload.get("event", {}).get("subtype") == "message_changed":
+        print("Detected a message changed event, discarding")
+        logging.info("Detected a message changed event, discarding")
+        return True
+    
     # Check headers, if x-slack-retry-num is present, this is a re-send
     # Really we should be doing async lambda model, but for now detecting resends and exiting
     if "x-slack-retry-num" in headers:
-        print("❌ Detected a re-send, exiting")
-        logging.info("❌ Detected a re-send, exiting")
+        print("Detected a Slack re-try, exiting")
         return True
 
     # Check if edited message in local development
@@ -505,7 +556,7 @@ def build_conversation_content(payload, token):
 # Common function to handle both DMs and app mentions
 def handle_message_event(client, body, say, bedrock_client, app, token, registered_bot_id):
 
-    #user_id = body["event"]["user"]
+    channel_id = body["event"]["channel"]
     event = body["event"]
 
     # Determine the thread timestamp
@@ -605,6 +656,12 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
     if enable_knowledge_base:
         print("🚀 Knowledge base enabled, fetching citations")
         
+        # Respond to the user that we're fetching citations
+        initial_response = say(
+            text=f"Checking the knowledge base :waiting:",
+            thread_ts=thread_ts,
+        )
+        
         if os.environ.get("VERA_DEBUG", "False") == "True":
             print("🚀 State of conversation before AI request:", conversation)
         
@@ -623,7 +680,22 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
             print(f"🚀 Flat conversation: {flat_conversation}")
         
         # Get context data from the knowledge base
-        knowledge_base_response = ask_bedrock_llm_with_knowledge_base(flat_conversation, ConfluenceKnowledgeBaseId)
+        try: 
+            knowledge_base_response = ask_bedrock_llm_with_knowledge_base(flat_conversation, ConfluenceKnowledgeBaseId)
+        except Exception as error:
+            # If the request fails, print the error
+            print(f"🚀 Error making request to Bedrock: {error}")
+            
+            # Split the error message at a colon, grab everything after the third colon
+            error = str(error).split(":", 2)[-1].strip()
+                        
+            # Return error as response
+            client.chat_update(
+                text=f"😔 Error fetching from knowledge base: " + error,
+                channel=channel_id,
+                ts=initial_response['ts'],
+            )
+            return
         
         if os.environ.get("VERA_DEBUG", "False") == "True":
             print(f"🚀 Knowledge base response: {knowledge_base_response}")
@@ -645,26 +717,23 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
                 }
             )
     
+    # Update the initial response
+    if enable_knowledge_base:
+        client.chat_update(
+            text=f"Chatting with the AI :waiting:",
+            channel=channel_id,
+            ts=initial_response['ts'],
+        )
+    else:
+        initial_response = say(
+            text=f"Chatting with the AI :waiting:",
+            thread_ts=thread_ts,
+        )
+    
     # Call the AI model with the conversation
     if os.environ.get("VERA_DEBUG", "False") == "True":
         print("🚀 State of conversation before AI request:", conversation)
-    response_text = ai_request(bedrock_client, conversation)
-
-    # Check if unsupported_file_type_found
-    if unsupported_file_type_found == True:
-        # If true, prepend error to response text
-        response_text = f"> `Error`: Unsupported file type found, please ensure you are sending a supported file type. Supported file types are: images (png, jpeg, gif, webp).\n{
-            response_text}"
-
-        if os.environ.get("VERA_DEBUG", "False") == "True":
-            print("🚀 Response text after adding errors:", response_text)
-
-    # Return response in the thread
-    say(
-        # text=f"Oh hi <@{user_id}>!\n\n{response_text}",
-        text=f"{response_text}",
-        thread_ts=thread_ts,
-    )
+    ai_request(bedrock_client, conversation, say, thread_ts, client, initial_response, channel_id)
     
     # Print success
     print("🚀 Successfully responded to message, exiting")
