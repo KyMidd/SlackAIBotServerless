@@ -39,13 +39,18 @@ enable_guardrails = False # Won't use guardrails if False
 guardrailIdentifier = "xxxxxxxxxx"
 guardrailVersion = "DRAFT"
 
+# Specify the AWS region for the AI model
+model_region_name = "us-west-2"
+
 # Knowledge base information
 enable_knowledge_base = False
 ConfluenceKnowledgeBaseId="xxxxxxxxxx" # kyler-test-confluence
 knowledgeBaseContextNumberOfResults = 5
 
-# Specify the AWS region for the AI model
-model_region_name = "us-west-2"
+# Rerank configuration
+enable_rerank = False
+rerank_number_of_results = 5
+rerank_model_id = "amazon.rerank-v1:0"
 
 # Model guidance, shimmed into each conversation as instructions for the model
 model_guidance = """Assistant is a large language model trained to provide the best possible experience for developers and operations teams.
@@ -61,9 +66,87 @@ Assistant should always provide a Confluence citation link when providing inform
 # Functions
 ###
 
+# Reranking knowledge base results
+def rerank_text(flat_conversation, kb_responses, bedrock_client):
+    
+    # Data looks like this: 
+    # [
+    #     {
+    #         "text": "text",
+    #         "url": "url",
+    #     },
+    #     {
+    #         "text": "text",
+    #         "url": "url",
+    #     }
+    # ]
+    
+    # Format kb_responses into a list of sources
+    kb_responses_text = []
+    for kb_response in kb_responses:
+        kb_responses_text.append(
+            [
+                kb_response['text']
+            ]
+        )
+        
+    # Flatten
+    kb_responses_text = [item[0] for item in kb_responses_text]
+
+    # Construct body
+    body = json.dumps(
+        {
+            "query": flat_conversation,
+            "documents": kb_responses_text,
+            "top_n": rerank_number_of_results,
+        }
+    )
+    
+    # Fetch ranks
+    rank_response = bedrock_client.invoke_model(
+        modelId=rerank_model_id,
+        accept="application/json",
+        contentType="application/json",
+        body=body,
+    )
+    
+    # Decode response
+    rank_response_body = json.loads(
+        rank_response['body'].read().decode()
+    )
+    
+    # Debug
+    if os.environ.get("VERA_DEBUG", "False") == "True":
+        print("🚀 Rerank response body:", rank_response_body)
+    
+    # Response looks like this: 
+    # [
+    #     {
+    #         "index": 9,
+    #         "relevance_score": 0.9438672242987702
+    #     },
+    #     {
+    #         "index": 0,
+    #         "relevance_score": 0.9343951625409306
+    #     }
+    # ]
+
+    # Iterate through the rank response and reorder the kb_responses and add relevance_score
+    # We're also filtering just for the most relevant results according to rerank_number_of_results
+    ranked_kb_responses = [
+        {
+            # Use the index value in rank_response to find the correct kb_response
+            "text": kb_responses[rank_response['index']]["text"],
+            "url": kb_responses[rank_response['index']]["url"],
+            "relevance_score": rank_response['relevance_score']
+        } for rank_response in rank_response_body['results']
+    ]
+    
+    return ranked_kb_responses
+
 
 # Function to retrieve info from RAG with knowledge base
-def ask_bedrock_llm_with_knowledge_base(flat_conversation, knowledge_base_id) -> str:
+def ask_bedrock_llm_with_knowledge_base(flat_conversation, knowledge_base_id, bedrock_client) -> str:
     
     # Create a Bedrock agent runtime client
     bedrock_agent_runtime_client = boto3.client(
@@ -72,9 +155,9 @@ def ask_bedrock_llm_with_knowledge_base(flat_conversation, knowledge_base_id) ->
     )
     
     # Uses model to retrieve related vectors from knowledge base
-    response = bedrock_agent_runtime_client.retrieve(
+    kb_response = bedrock_agent_runtime_client.retrieve(
         retrievalQuery={
-          'text': flat_conversation
+        'text': flat_conversation
         },
         knowledgeBaseId=knowledge_base_id,
         retrievalConfiguration={
@@ -83,8 +166,31 @@ def ask_bedrock_llm_with_knowledge_base(flat_conversation, knowledge_base_id) ->
             }
         },
     )
+    
+    # Structure response
+    kb_responses = [
+        {
+            "text": result['content']['text'],
+            "url": result['location']['confluenceLocation']['url']
+        } for result in kb_response['retrievalResults']
+    ]
+    
+    if os.environ.get("VERA_DEBUG", "False") == "True":
+        print("🚀 Knowledge base responses:", kb_responses)
+    
+    if enable_rerank:
+        # Rerank the knowledge base results
+        kb_responses = rerank_text(
+            flat_conversation,
+            kb_responses,
+            bedrock_client
+        )
+        
+        # Debug
+        if os.environ.get("VERA_DEBUG", "False") == "True":
+            print("🚀 Knowledge reranked response:", kb_responses)
 
-    return response
+    return kb_responses
 
 
 # Get GitHubPAT secret from AWS Secrets Manager that we'll use to start the githubcop workflow
@@ -175,7 +281,7 @@ def register_slack_app(token, signing_secret):
 
 
 # Receives the streaming response and updates the slack message, chunk by chunk
-def response_on_slack(client, streaming_response, initial_response, channel_id, thread_ts):
+def response_on_slack(client, streaming_response, message_ts, channel_id, thread_ts):
     
     # Print streaming response
     if os.environ.get("VERA_DEBUG", "False") == "True":
@@ -198,7 +304,7 @@ def response_on_slack(client, streaming_response, initial_response, channel_id, 
                 client.chat_update(
                     text=response,
                     channel=channel_id,
-                    ts=initial_response['ts']
+                    ts=message_ts
                 )
                 # Every time we update to slack, we zero out the token counter and buffer
                 token_counter = 0
@@ -210,15 +316,15 @@ def response_on_slack(client, streaming_response, initial_response, channel_id, 
         client.chat_update(
             text=response,
             channel=channel_id,
-            ts=initial_response['ts']
+            ts=message_ts
         )
 
 
 # Handle ai request input and response
-def ai_request(bedrock_client, messages, say, thread_ts, client, initial_response, channel_id):
+def ai_request(bedrock_client, messages, say, thread_ts, client, message_ts, channel_id):
         
     # Format model system prompt for the request
-    model_prompt = [
+    system = [
         {
             "text": model_guidance
         }
@@ -246,13 +352,13 @@ def ai_request(bedrock_client, messages, say, thread_ts, client, initial_respons
                     "guardrailVersion": guardrailVersion,
                 },
                 messages=messages,
-                system=model_prompt,
+                system=system,
                 inferenceConfig=inference_config,
                 additionalModelRequestFields=additional_model_fields
             )
             
             # Call function to respond on slack
-            response_on_slack(client, streaming_response, initial_response, channel_id, thread_ts)
+            response_on_slack(client, streaming_response, message_ts, channel_id, thread_ts)
             
         except Exception as error:
             # If the request fails, print the error
@@ -262,9 +368,9 @@ def ai_request(bedrock_client, messages, say, thread_ts, client, initial_respons
             error = str(error).split(":")[-1].strip()
             
             # Return error as response
-            say(
-                text="😔 Error with request: " + str(error),
-                thread_ts=thread_ts,
+            message_ts = update_slack_response(
+                say, client, message_ts, channel_id, thread_ts, 
+                f"😔 Error with request: " + str(error),
             )
              
     # If enable_guardrails is set to False, do not include guardrailIdentifier and guardrailVersion in the request
@@ -273,14 +379,18 @@ def ai_request(bedrock_client, messages, say, thread_ts, client, initial_respons
         try:
             streaming_response = bedrock_client.converse_stream(
                 modelId=model_id,
+                guardrailConfig={
+                    "guardrailIdentifier": guardrailIdentifier,
+                    "guardrailVersion": guardrailVersion,
+                },
                 messages=messages,
-                system=model_prompt,
+                system=system,
                 inferenceConfig=inference_config,
                 additionalModelRequestFields=additional_model_fields
             )
             
             # Respond on slack
-            response_on_slack(client, streaming_response, initial_response, channel_id, thread_ts)
+            response_on_slack(client, streaming_response, message_ts, channel_id, thread_ts)
             
         except Exception as error:
             # If the request fails, print the error
@@ -290,9 +400,9 @@ def ai_request(bedrock_client, messages, say, thread_ts, client, initial_respons
             error = str(error).split(":", 1)[1]
             
             # Return error as response
-            say(
-                text="😔 Error with request: " + str(error),
-                thread_ts=thread_ts,
+            message_ts = update_slack_response(
+                say, client, message_ts, channel_id, thread_ts, 
+                f"😔 Error with request: " + str(error),
             )
 
 
@@ -555,6 +665,10 @@ def build_conversation_content(payload, token):
 
 # Common function to handle both DMs and app mentions
 def handle_message_event(client, body, say, bedrock_client, app, token, registered_bot_id):
+    
+    # Initialize message_ts as None
+    # This is used to track the slack message timestamp for updating the message
+    message_ts = None
 
     channel_id = body["event"]["channel"]
     event = body["event"]
@@ -650,6 +764,7 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
             text=f"> `Error`: Unsupported file type found, please ensure you are sending a supported file type. Supported file types are: images (png, jpeg, gif, webp).",
             thread_ts=thread_ts,
         )
+        
         return
     
     # If enabled, fetch the confluence context from the knowledge base
@@ -657,11 +772,11 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
         print("🚀 Knowledge base enabled, fetching citations")
         
         # Respond to the user that we're fetching citations
-        initial_response = say(
-            text=f"Checking the knowledge base :waiting:",
-            thread_ts=thread_ts,
+        message_ts = update_slack_response(
+            say, client, message_ts, channel_id, thread_ts, 
+            f"Checking the knowledge base and ranking results :waiting:",
         )
-        
+    
         if os.environ.get("VERA_DEBUG", "False") == "True":
             print("🚀 State of conversation before AI request:", conversation)
         
@@ -681,7 +796,7 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
         
         # Get context data from the knowledge base
         try: 
-            knowledge_base_response = ask_bedrock_llm_with_knowledge_base(flat_conversation, ConfluenceKnowledgeBaseId)
+            knowledge_base_response = ask_bedrock_llm_with_knowledge_base(flat_conversation, ConfluenceKnowledgeBaseId, bedrock_client)
         except Exception as error:
             # If the request fails, print the error
             print(f"🚀 Error making request to Bedrock: {error}")
@@ -689,51 +804,66 @@ def handle_message_event(client, body, say, bedrock_client, app, token, register
             # Split the error message at a colon, grab everything after the third colon
             error = str(error).split(":", 2)[-1].strip()
                         
-            # Return error as response
-            client.chat_update(
-                text=f"😔 Error fetching from knowledge base: " + error,
-                channel=channel_id,
-                ts=initial_response['ts'],
+            # Tell user we're fetching citations
+            message_ts = update_slack_response(
+                say, client, message_ts, channel_id, thread_ts, 
+                f"😔 Error fetching from knowledge base: " + error,
             )
+            
             return
         
         if os.environ.get("VERA_DEBUG", "False") == "True":
             print(f"🚀 Knowledge base response: {knowledge_base_response}")
         
         # Iterate through responses
-        for result in knowledge_base_response["retrievalResults"]:
-            citation_result = result['content']['text']
-            citation_url = result['location']['confluenceLocation']['url']
+        for result in knowledge_base_response:
+            citation_result = result['text']
+            citation_url = result['url']
             
-            # Append to conversation
-            conversation.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "text": f"Knowledge base citation to supplement your answer: {citation_result} from URL {citation_url}",
-                        }
-                    ],
-                }
-            )
+            # If reranking enabled, use that information
+            if enable_rerank:
+                
+                # Find the relevance score
+                relevance_score = result['relevance_score']
+                
+                # Append to conversation
+                conversation.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "text": f"Knowledge base citation to supplement your answer: {citation_result} from URL {citation_url}. Reranker scored this result relevancy at {relevance_score}",
+                            }
+                        ],
+                    }
+                )
+            
+            # If reranking not enabled, just use the citation information, no score is available
+            else:
+                
+                # Append to conversation
+                conversation.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "text": f"Knowledge base citation to supplement your answer: {citation_result} from URL {citation_url}",
+                            }
+                        ],
+                    }
+                )
     
-    # Update the initial response
-    if enable_knowledge_base:
-        client.chat_update(
-            text=f"Chatting with the AI :waiting:",
-            channel=channel_id,
-            ts=initial_response['ts'],
-        )
-    else:
-        initial_response = say(
-            text=f"Chatting with the AI :waiting:",
-            thread_ts=thread_ts,
-        )
+    
+    # Tell user we're chatting with the AI
+    message_ts = update_slack_response(
+        say, client, message_ts, channel_id, thread_ts, 
+        "Chatting with the AI :waiting:"
+    )
     
     # Call the AI model with the conversation
     if os.environ.get("VERA_DEBUG", "False") == "True":
         print("🚀 State of conversation before AI request:", conversation)
-    ai_request(bedrock_client, conversation, say, thread_ts, client, initial_response, channel_id)
+    ai_request(bedrock_client, conversation, say, thread_ts, client, message_ts, channel_id)
     
     # Print success
     print("🚀 Successfully responded to message, exiting")
@@ -752,6 +882,29 @@ def isolate_event_body(event):
     # Return the event
     return body
 
+
+# Update slack response - handle initial post and streaming response
+def update_slack_response(say, client, message_ts, channel_id, thread_ts, message_text):
+    
+    # If message_ts is None, we're posting a new message
+    if message_ts is None:
+        slack_response = say(
+            text=message_text,
+            thread_ts=thread_ts,
+        )
+        # Set message_ts
+        message_ts = slack_response['ts']
+    else:
+        # We're updating an existing message
+        client.chat_update(
+            text=message_text,
+            channel=channel_id,
+            ts=message_ts,
+        )
+    
+    # Return the message_ts
+    return message_ts
+    
 
 # Generate response
 def generate_response(status_code, message):
@@ -774,7 +927,6 @@ def generate_response(status_code, message):
 
 # Define handler function for AWS Lambda
 def lambda_handler(event, context):
-
     print("🚀 Lambda execution starting")
 
     # Isolate body
@@ -783,23 +935,9 @@ def lambda_handler(event, context):
     # Print the event
     print("🚀 Event:", event)
 
-    # Special challenge event for Slack. If receive a challenge request, immediately return the challenge
-    if "challenge" in event_body:
-        print("🚀 Challenge event detected, returning challenge and exiting")
-        return {
-            "statusCode": 200,
-            "body": json.dumps({"challenge": event_body["challenge"]}),
-        }
-
     # Debug 
     if os.environ.get("VERA_DEBUG", "False") == "True":
         print("🚀 Event body:", event_body)
-    
-    # Check for duplicate event or trash messages, return 200 and exit if detected
-    if check_for_duplicate_event(event["headers"], event_body["event"]):
-        return generate_response(
-            200, "❌ Detected a re-send or edited message, exiting"
-        )
 
     # Fetch secret package
     secrets = get_secret_ssm_layer(bot_secret_name)
@@ -837,7 +975,6 @@ def lambda_handler(event, context):
 
 # Main function, primarily for local development
 if __name__ == "__main__":
-
     # Run in local development mode
     print("🚀 Local server starting starting")
 
@@ -860,29 +997,22 @@ if __name__ == "__main__":
     # Responds to app mentions
     @app.event("app_mention")
     def handle_app_mention_events(client, body, say, req, payload):
-        # Check for duplicate event or trash messages, return 200 and exit if detected
-        if check_for_duplicate_event(req.headers, payload):
-            return generate_response(
-                200, "❌ Detected a re-send or edited message, exiting"
-            )
-
+        # Check for duplicate events in local development
+        if check_for_duplicate_event(req.headers, body):
+            return
         # Handle request
         handle_message_event(client, body, say, bedrock_client, app, token, registered_bot_id)
 
     # Respond to file share events
     @app.event("message")
     def handle_message_events(client, body, say, req, payload):
-        # Check for duplicate event or trash messages, return 200 and exit if detected
-        if check_for_duplicate_event(req.headers, payload):
-            return generate_response(
-                200, "❌ Detected a re-send or edited message, exiting"
-            )
-
+        # Check for duplicate events in local development
+        if check_for_duplicate_event(req.headers, body):
+            return
         # Handle request
         handle_message_event(client, body, say, bedrock_client, app, token, registered_bot_id)
 
     # Start the app in websocket mode for local development
-    # Will require a separate terminal to run ngrok, e.g.: ngrok http http://localhost:3000
     print("🚀 Starting the slack app listener")
     app.start(
         port=int(os.environ.get("PORT", 3000)),
