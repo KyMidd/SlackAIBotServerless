@@ -8,6 +8,8 @@ This code is discussed at length on LetsDoDevOps.com, you can find the articles 
 - Part 3: [We’ll connect our slack bot with Bedrock locally using python3 with ngrok so slack users can have conversations with AI](https://www.letsdodevops.com/p/lets-do-devops-building-a-slack-bot-40c)
 - Part 4: [How to convert your local script to an event-driven serverless, cloud-based app in AWS Lambda](https://www.letsdodevops.com/p/building-a-slack-bot-part-4-serverless-with-lambda)
 - Part 5: [Building a RAG Knowledge Base of an entire Confluence wiki, and teaching our Slack Bot to Read it in Real-Time](https://www.letsdodevops.com/p/building-a-slack-bot-with-ai-capabilities)
+- Part 6: [Adding support for DOC/X, XLS/X, PDF, and More to Chat with your Data](https://www.letsdodevops.com/p/building-a-slack-bot-with-ai-capabilities-bdf)
+- Part 7: [Streaming Token Responses from AWS Bedrock to Slack using converse_stream()](https://www.letsdodevops.com/p/building-a-slack-bot-with-ai-capabilities-d2d)
 
 # Architecture
 
