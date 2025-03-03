@@ -85,11 +85,25 @@ resource "aws_iam_role_policy" "DevOpsBotSlack_Bedrock" {
     {
       "Version" : "2012-10-17",
       "Statement" : [
-        # Grant permission to invoke bedrock models of any type in us-west-2 region
+        # Grant permission to invoke bedrock models of any type in US regions
         {
           "Effect" : "Allow",
-          "Action" : "bedrock:InvokeModel",
-          "Resource" : "arn:aws:bedrock:us-west-2::foundation-model/*"
+          "Action" : [
+            "bedrock:InvokeModel",
+            "bedrock:InvokeModelStream",
+            "bedrock:InvokeModelWithResponseStream",
+          ],
+          # Both no longer specify region, since Bedrock wants cross-region access
+          "Resource" : [
+            "arn:aws:bedrock:us-east-1::foundation-model/*",
+            "arn:aws:bedrock:us-east-2::foundation-model/*",
+            "arn:aws:bedrock:us-west-1::foundation-model/*",
+            "arn:aws:bedrock:us-west-2::foundation-model/*",
+            "arn:aws:bedrock:us-east-1:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+            "arn:aws:bedrock:us-east-2:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+            "arn:aws:bedrock:us-west-1:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+            "arn:aws:bedrock:us-west-2:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+          ]
         },
         # Grant permission to invoke bedrock guardrails of any type in us-west-2 region
         {
