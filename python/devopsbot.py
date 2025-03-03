@@ -14,6 +14,7 @@ import boto3
 import json
 import requests
 import re
+from datetime import datetime, timezone
 
 # Slack app imports
 from slack_bolt import App
@@ -22,11 +23,27 @@ from slack_bolt.adapter.aws_lambda import SlackRequestHandler
 
 
 ###
+# Fetch current date and time
+###
+
+# Current date and time, fetched at launch
+current_utc = datetime.now(timezone.utc)
+current_utc_string = current_utc.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+###
 # Constants
 ###
 
+# Bot info
+bot_name = "Vera"
+
+# Slack
+slack_buffer_token_size = 10 # Number of tokens to buffer before updating Slack
+slack_message_size_limit_words = 350 # Slack limit of characters in response is 4k. That's ~420 words. 350 words is a safe undershot of words that'll fit in a slack response. Used in the system prompt for Vera. 
+
 # Specify model ID and temperature
-model_id = 'anthropic.claude-3-5-sonnet-20241022-v2:0'
+model_id = "us.anthropic.claude-3-7-sonnet-20250219-v1:0" # US regional Claude 3.7 Sonnet model
 anthropic_version = "bedrock-2023-05-31"
 temperature = 0.2
 top_k = 25
@@ -34,7 +51,7 @@ top_k = 25
 # Secrets manager secret name. Json payload should contain SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET
 bot_secret_name = "DEVOPSBOT_SECRETS_JSON"
 
-# Guardrail information
+# Bedrock guardrail information
 enable_guardrails = False # Won't use guardrails if False
 guardrailIdentifier = "xxxxxxxxxx"
 guardrailVersion = "DRAFT"
@@ -53,13 +70,15 @@ rerank_number_of_results = 5
 rerank_model_id = "amazon.rerank-v1:0"
 
 # Model guidance, shimmed into each conversation as instructions for the model
-model_guidance = """Assistant is a large language model trained to provide the best possible experience for developers and operations teams.
-Assistant is designed to provide accurate and helpful responses to a wide range of questions. 
-Assistant answers should be short and to the point, usually less than 100 words and should be relevant to the user's question.
-Assistant should follow Slack's best practices for formatting messages.
-Assistant should address the user by name.
-Assistant should always provide a Confluence citation link when providing information from the knowledge base.
-"""
+model_guidance = f"""Assistant is a large language model named {bot_name} who is trained to support Veradigm in providing the best possible experience for their developers and operations team. 
+    Assistant must follow Slack's best practices for formatting messages.
+    Assistant must limit messages to {slack_message_size_limit_words} words, including code blocks. For longer responses Assistant should provide the first part of the response, and then prompt User to ask for the next part of the response. 
+    Assistant should address the user by name, and shouldn't echo user's pronouns. 
+    When Assistant finishes responding entirely, Assistant should suggest questions the User can ask. 
+    Assistant should always provide a Confluence citation link when providing information from the knowledge base.
+    When providing Splunk query advice, Assistant must recommend queries that use the fewest resources. 
+    The current date and time is {current_utc_string} UTC.
+    """
 
 
 ###
@@ -300,7 +319,15 @@ def response_on_slack(client, streaming_response, message_ts, channel_id, thread
             buffer += text
             token_counter += 1
             
-            if token_counter >= 10:
+            if token_counter >= slack_buffer_token_size:
+                # Debug
+                if os.environ.get("VERA_DEBUG", "False") == "True":
+                    # Print response word count
+                    print("🚀 Response word count:", len(response.split()))
+                    
+                    # Print response character count
+                    print("🚀 Response character count:", len(response))
+                
                 client.chat_update(
                     text=response,
                     channel=channel_id,
@@ -313,6 +340,14 @@ def response_on_slack(client, streaming_response, message_ts, channel_id, thread
     # If buffer contains anything after iterating over any chunks, add it also
     # This completes the update
     if buffer:
+        # Debug
+        if os.environ.get("VERA_DEBUG", "False") == "True":
+            # Print response word count
+            print("🚀 Final response word count:", len(response.split()))
+            
+            # Print response character count
+            print("🚀 Final response character count:", len(response))
+        
         client.chat_update(
             text=response,
             channel=channel_id,
