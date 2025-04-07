@@ -10,10 +10,14 @@ This code is discussed at length on LetsDoDevOps.com, you can find the articles 
 - Part 5: [Building a RAG Knowledge Base of an entire Confluence wiki, and teaching our Slack Bot to Read it in Real-Time](https://www.letsdodevops.com/p/building-a-slack-bot-with-ai-capabilities)
 - Part 6: [Adding support for DOC/X, XLS/X, PDF, and More to Chat with your Data](https://www.letsdodevops.com/p/building-a-slack-bot-with-ai-capabilities-bdf)
 - Part 7: [Streaming Token Responses from AWS Bedrock to Slack using converse_stream()](https://www.letsdodevops.com/p/building-a-slack-bot-with-ai-capabilities-d2d)
+- Part 8: [ReRanking knowledge base responses to improve AI model response efficacy](https://www.letsdodevops.com/p/slack-ai-reranking)
+- Part 9: [Reducing Cost and Complexity with a Lambda Receiver Pattern](https://www.letsdodevops.com/p/building-a-slack-bot-receiver)
 
 # Architecture
 
-Requests are relayed from the Slack App to a private Lambda URL, which spins up quite quickly. It fetches the necessary secrets from secrets manager (authentication is via IAM role) to enable the slack app for decoding the requests, then extracts both the request, and if applicable, the slack thread, which is all encoded into the request to the AI in Bedrock. The response is relayed and posted to the thread. 
+Requests are relayed from the Slack App to a private Lambda URL which is attached to a "receiver" lambda. This spins up quickly, and validates the message. This message is forwarded to the Vera bot, which does the actual work, and responds to Slack that the message has been received. 
+
+The Vera bot is triggered by the Receiver lambda. It fetches the necessary secrets from secrets manager (authentication is via IAM role) to enable the slack app for decoding the requests, then extracts both the request, and if applicable, the slack thread, which is all encoded into the request to the AI in Bedrock. The response is relayed and posted to the thread. 
 
 Slack User tags Bot in shared thread (bot must be invited) or DMs Bot --> Slack App sees trigger, sends webhook to Lambda URL --> Lambda reads package and extracts message and thread context, constructs AI request --> AI request to Bedrock, Bedrock creates response --> Lambda relays response back to Slack App --> Slack App posts to Slack within thread. 
 
@@ -41,9 +45,15 @@ Lambda can spin up hundreds of concurrencies without much effort, so monitoring 
 
 # Cost
 
-Assuming 100 requests per week (will depend on your biz size, use) that take ~10 seconds total (assuming on the high end)
+Assuming 100 requests per week (will depend on your biz size, use) that take ~5-10 seconds total (assuming on the high end)
 Lambda cost: $0.03 / month
 
 AI cost (depends on request complexity), assuming 1k tokens per request: $3.20/month
 
+Total without a knowledge base: $3.23/month for ~100 requests of moderate complexity. 
+
 Bedrock Knowledge Bases are expensive. Though they're "serverless", they don't spin down to $0. Instead, they spin down to about ~$60/day, or about $1.8k/month. That's a lot! You can work with AWS Support to turn off "vector preload" setting on the OpenSearch serverless instances, which brings the cost down significantly - to around $35/day, or just over $1k/month. That's still a lot, but way more reasonable than $25k/yr. 
+
+Knowledge bases can contain lots of different "data sources" that they read and synchronize with, so you can scale out more data without accruing more cost. 
+
+Total with a single confluence knowledge base: ~1.1k/month. 

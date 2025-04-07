@@ -236,30 +236,3 @@ resource "aws_lambda_function" "devopsbot_slack" {
     }
   }
 }
-
-# Publish alias of new version
-resource "aws_lambda_alias" "devopsbot_alias" {
-  name             = "Latest"
-  function_name    = aws_lambda_function.devopsbot_slack.arn
-  function_version = aws_lambda_function.devopsbot_slack.version
-}
-
-# Point lambda function url at new version
-resource "aws_lambda_function_url" "DevOpsBot_Slack_Trigger_FunctionUrl" {
-  function_name      = aws_lambda_function.devopsbot_slack.function_name
-  authorization_type = "NONE"
-  qualifier          = aws_lambda_alias.devopsbot_alias.name
-}
-
-# Print the URL we can use to trigger the bot
-output "DevOpsBot_Slack_Trigger_FunctionUrl" {
-  value = aws_lambda_function_url.DevOpsBot_Slack_Trigger_FunctionUrl.function_url
-}
-
-# Provisioned concurrency to improve response speed
-# Points at $LATEST unless assigned to an alias, which we are doing here with "qualifier"
-# resource "aws_lambda_provisioned_concurrency_config" "devopsbot_slack_concurrency" {
-#   function_name                     = aws_lambda_function.devopsbot_slack.function_name
-#   provisioned_concurrent_executions = 5
-#   qualifier                         = aws_lambda_alias.devopsbot_alias.name
-# }

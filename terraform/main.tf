@@ -32,3 +32,6 @@ module "devopsbot_lambda" {
   }
 }
 
+output "receiver_lambda_arn_for_slack" {
+  value = module.devopsbot_lambda.DevOpsBot_Slack_Trigger_FunctionUrl
+}
