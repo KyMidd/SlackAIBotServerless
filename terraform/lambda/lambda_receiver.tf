@@ -2,7 +2,7 @@
 # IAM Role and policies for Message Receiver Lambda
 ###
 
-data "aws_iam_policy_document" "Ue1TiDevOpsBotReceiverRole_assume_role" {
+data "aws_iam_policy_document" "DevOpsBotReceiverRole_assume_role" {
   statement {
     effect = "Allow"
     principals {
@@ -13,14 +13,14 @@ data "aws_iam_policy_document" "Ue1TiDevOpsBotReceiverRole_assume_role" {
   }
 }
 
-resource "aws_iam_role" "Ue1TiDevOpsBotReceiverRole" {
-  name               = "Ue1TiDevOpsBotReceiverRole"
-  assume_role_policy = data.aws_iam_policy_document.Ue1TiDevOpsBotReceiverRole_assume_role.json
+resource "aws_iam_role" "DevOpsBotReceiverRole" {
+  name               = "DevOpsBotReceiverRole"
+  assume_role_policy = data.aws_iam_policy_document.DevOpsBotReceiverRole_assume_role.json
 }
 
 resource "aws_iam_role_policy" "DevOpsBotReceiver_Lambda" {
   name = "InvokeLambda"
-  role = aws_iam_role.Ue1TiDevOpsBotReceiverRole.id
+  role = aws_iam_role.DevOpsBotReceiverRole.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -39,7 +39,7 @@ resource "aws_iam_role_policy" "DevOpsBotReceiver_Lambda" {
 
 resource "aws_iam_role_policy" "DevOpsBotReceiver_Cloudwatch" {
   name = "Cloudwatch"
-  role = aws_iam_role.Ue1TiDevOpsBotReceiverRole.id
+  role = aws_iam_role.DevOpsBotReceiverRole.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -76,7 +76,7 @@ data "archive_file" "devopsbot_receiver_lambda" {
 resource "aws_lambda_function" "devopsbot_receiver" {
   filename      = "${path.module}/receiver.zip"
   function_name = "DevOpsBotReceiver"
-  role          = aws_iam_role.Ue1TiDevOpsBotReceiverRole.arn
+  role          = aws_iam_role.DevOpsBotReceiverRole.arn
   handler       = "receiver.lambda_handler"
   timeout       = 10
   memory_size   = 128
