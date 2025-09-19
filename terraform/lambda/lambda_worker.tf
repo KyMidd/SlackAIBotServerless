@@ -10,26 +10,10 @@ data "aws_region" "current" {}
 
 
 ###
-# Fetch secret ARNs from Secrets Manager
-# We don't want to store sensitive information in our codebase (or in terraform's state file),
-# so we fetch it from Secrets Manager
+# IAM Role and policies
 ###
 
-data "aws_secretsmanager_secret" "devopsbot_secrets_json" {
-  name = "DEVOPSBOT_SECRETS_JSON"
-}
-
-/*
-This secret should be formatted like this:
-{"SLACK_BOT_TOKEN":"xoxb-xxxxxx-arOa","SLACK_SIGNING_SECRET":"2cxxxxxxxxxxxxda"}
-*/
-
-
-###
-# IAM Role and policies for GitHubCop Trigger Lambda
-###
-
-data "aws_iam_policy_document" "DevOpsBotIamRole_assume_role" {
+data "aws_iam_policy_document" "worker_assume_role" {
   statement {
     effect = "Allow"
 
@@ -42,14 +26,14 @@ data "aws_iam_policy_document" "DevOpsBotIamRole_assume_role" {
   }
 }
 
-resource "aws_iam_role" "DevOpsBotIamRole" {
-  name               = "DevOpsBotIamRole"
-  assume_role_policy = data.aws_iam_policy_document.DevOpsBotIamRole_assume_role.json
+resource "aws_iam_role" "worker_role" {
+  name               = "${var.bot_name}BotIamRole"
+  assume_role_policy = data.aws_iam_policy_document.worker_assume_role.json
 }
 
-resource "aws_iam_role_policy" "DevOpsBotSlack_ReadSecret" {
+resource "aws_iam_role_policy" "worker_ReadSecret" {
   name = "ReadSecret"
-  role = aws_iam_role.DevOpsBotRole.id
+  role = aws_iam_role.worker_role.id
 
   policy = jsonencode(
     {
@@ -64,7 +48,7 @@ resource "aws_iam_role_policy" "DevOpsBotSlack_ReadSecret" {
             "secretsmanager:ListSecretVersionIds"
           ],
           "Resource" : [
-            data.aws_secretsmanager_secret.devopsbot_secrets_json.arn,
+            aws_secretsmanager_secret.BotSecret.arn
           ]
         },
         {
@@ -77,9 +61,9 @@ resource "aws_iam_role_policy" "DevOpsBotSlack_ReadSecret" {
   )
 }
 
-resource "aws_iam_role_policy" "DevOpsBotSlack_Bedrock" {
+resource "aws_iam_role_policy" "worker_Bedrock" {
   name = "Bedrock"
-  role = aws_iam_role.DevOpsBotRole.id
+  role = aws_iam_role.worker_role.id
 
   policy = jsonencode(
     {
@@ -125,9 +109,9 @@ resource "aws_iam_role_policy" "DevOpsBotSlack_Bedrock" {
   )
 }
 
-resource "aws_iam_role_policy" "DevOpsBotSlackTrigger_Cloudwatch" {
+resource "aws_iam_role_policy" "worker_cloudwatch" {
   name = "Cloudwatch"
-  role = aws_iam_role.DevOpsBotIamRole.id
+  role = aws_iam_role.worker_role.id
 
   policy = jsonencode(
     {
@@ -145,7 +129,7 @@ resource "aws_iam_role_policy" "DevOpsBotSlackTrigger_Cloudwatch" {
             "logs:PutLogEvents"
           ],
           "Resource" : [
-            "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.id}:log-group:/aws/lambda/DevOpsBot:*"
+            "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.id}:log-group:/aws/lambda/${var.bot_name}:*"
           ]
         }
       ]
@@ -195,26 +179,45 @@ resource "aws_lambda_layer_version" "slack_bolt" {
   compatible_architectures = ["arm64"]
 }
 
+# Create requests layer
+/*
+mkdir -p lambda/requests/python/lib/python3.12/site-packages/
+pip3 install requests -t lambda/requests/python/lib/python3.12/site-packages/. --no-cache-dir 
+*/
+# data "archive_file" "requests_layer" {
+#   type        = "zip"
+#   source_dir  = "${path.module}/requests"
+#   output_path = "${path.module}/requests_layer.zip"
+# }
+resource "aws_lambda_layer_version" "requests" {
+  layer_name       = "Requests"
+  filename         = "${path.module}/requests_layer.zip"
+  source_code_hash = filesha256("${path.module}/requests_layer.zip")
+
+  compatible_runtimes      = ["python3.12"]
+  compatible_architectures = ["arm64"]
+}
+
 
 ###
 # Build lambda
 ###
 
 # Zip up python lambda code
-data "archive_file" "devopsbot_slack_trigger_lambda" {
+data "archive_file" "worker_slack_trigger_lambda" {
   type        = "zip"
-  source_file = "python/devopsbot.py"
-  output_path = "${path.module}/devopsbot.zip"
+  source_file = "../python/worker.py"
+  output_path = "${path.module}/worker.zip"
 }
 
 # Build lambda function
-resource "aws_lambda_function" "devopsbot_slack" {
-  filename      = "${path.module}/devopsbot.zip"
-  function_name = "DevOpsBot"
-  role          = aws_iam_role.DevOpsBotIamRole.arn
-  handler       = "devopsbot.lambda_handler"
+resource "aws_lambda_function" "worker_slack" {
+  filename      = "${path.module}/worker.zip"
+  function_name = var.bot_name
+  role          = aws_iam_role.worker_role.arn
+  handler       = "worker.lambda_handler"
   timeout       = 30
-  memory_size   = 512
+  memory_size   = 1024
   runtime       = "python3.12"
   architectures = ["arm64"]
   publish       = true
@@ -222,17 +225,24 @@ resource "aws_lambda_function" "devopsbot_slack" {
   # Layers are packaged code for lambda
   layers = [
     # This layer permits us to ingest secrets from Secrets Manager
-    "arn:aws:lambda:us-east-1:${data.aws_caller_identity.current.id}:layer:AWS-Parameters-and-Secrets-Lambda-Extension-Arm64:12",
+    # It's hosted by AWS, so we can just reference the ARN directly
+    "arn:aws:lambda:us-east-1:177933569100:layer:AWS-Parameters-and-Secrets-Lambda-Extension-Arm64:12",
 
     # Slack bolt layer to support slack app
     aws_lambda_layer_version.slack_bolt.arn,
+
+    # Requests layer to support HTTP calls
+    aws_lambda_layer_version.requests.arn,
   ]
 
-  source_code_hash = data.archive_file.devopsbot_slack_trigger_lambda.output_base64sha256
+  source_code_hash = data.archive_file.worker_slack_trigger_lambda.output_base64sha256
 
   environment {
     variables = {
-      VERA_DEBUG = "True"
+      BOT_SECRET_NAME  = local.bot_secrets_manager_secret_name
+      BOT_NAME         = var.bot_name
+      MODEL_NAME       = var.model_name
+      SLACK_BOT_APP_ID = var.slack_bot_app_id
     }
   }
 }

@@ -2,7 +2,7 @@
 # IAM Role and policies for Message Receiver Lambda
 ###
 
-data "aws_iam_policy_document" "DevOpsBotReceiverRole_assume_role" {
+data "aws_iam_policy_document" "receiver_assume_role" {
   statement {
     effect = "Allow"
     principals {
@@ -13,14 +13,14 @@ data "aws_iam_policy_document" "DevOpsBotReceiverRole_assume_role" {
   }
 }
 
-resource "aws_iam_role" "DevOpsBotReceiverRole" {
-  name               = "DevOpsBotReceiverRole"
-  assume_role_policy = data.aws_iam_policy_document.DevOpsBotReceiverRole_assume_role.json
+resource "aws_iam_role" "receiver_role" {
+  name               = "${var.bot_name}ReceiverRole"
+  assume_role_policy = data.aws_iam_policy_document.receiver_assume_role.json
 }
 
-resource "aws_iam_role_policy" "DevOpsBotReceiver_Lambda" {
+resource "aws_iam_role_policy" "receiver_lambda" {
   name = "InvokeLambda"
-  role = aws_iam_role.DevOpsBotReceiverRole.id
+  role = aws_iam_role.receiver_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -31,15 +31,15 @@ resource "aws_iam_role_policy" "DevOpsBotReceiver_Lambda" {
           "lambda:InvokeFunction",
           "lambda:InvokeAsync"
         ]
-        Resource = [aws_lambda_function.devopsbot_slack.arn]
+        Resource = [aws_lambda_function.worker_slack.arn]
       }
     ]
   })
 }
 
-resource "aws_iam_role_policy" "DevOpsBotReceiver_Cloudwatch" {
+resource "aws_iam_role_policy" "receiver_cloudwatch" {
   name = "Cloudwatch"
-  role = aws_iam_role.DevOpsBotReceiverRole.id
+  role = aws_iam_role.receiver_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -56,7 +56,7 @@ resource "aws_iam_role_policy" "DevOpsBotReceiver_Cloudwatch" {
           "logs:PutLogEvents"
         ]
         Resource = [
-          "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.id}:log-group:/aws/lambda/DevOpsBotReceiver:*"
+          "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.id}:log-group:/aws/lambda/${var.bot_name}Receiver:*"
         ]
       }
     ]
@@ -69,14 +69,14 @@ resource "aws_iam_role_policy" "DevOpsBotReceiver_Cloudwatch" {
 
 data "archive_file" "devopsbot_receiver_lambda" {
   type        = "zip"
-  source_file = "python/receiver.py"
+  source_file = "../python/receiver.py"
   output_path = "${path.module}/receiver.zip"
 }
 
 resource "aws_lambda_function" "devopsbot_receiver" {
   filename      = "${path.module}/receiver.zip"
-  function_name = "DevOpsBotReceiver"
-  role          = aws_iam_role.DevOpsBotReceiverRole.arn
+  function_name = "${var.bot_name}Receiver"
+  role          = aws_iam_role.receiver_role.arn
   handler       = "receiver.lambda_handler"
   timeout       = 10
   memory_size   = 128
@@ -87,7 +87,8 @@ resource "aws_lambda_function" "devopsbot_receiver" {
 
   environment {
     variables = {
-      PROCESSOR_FUNCTION_NAME = aws_lambda_function.devopsbot_slack.function_name
+      PROCESSOR_FUNCTION_NAME = aws_lambda_function.worker_slack.function_name
+      SLACK_BOT_APP_ID        = var.slack_bot_app_id
     }
   }
 }
@@ -107,13 +108,13 @@ resource "aws_lambda_alias" "devopsbot_receiver_alias" {
 }
 
 # Point lambda function url at new version
-resource "aws_lambda_function_url" "DevOpsBotReceiver_Slack_Trigger_FunctionUrl" {
+resource "aws_lambda_function_url" "receiver_slack_function_url" {
   function_name      = aws_lambda_function.devopsbot_receiver.function_name
   qualifier          = aws_lambda_alias.devopsbot_receiver_alias.name
   authorization_type = "NONE"
 }
 
 # Print the URL we can use to trigger the bot
-output "DevOpsBot_Slack_Trigger_FunctionUrl" {
-  value = aws_lambda_function_url.DevOpsBotReceiver_Slack_Trigger_FunctionUrl.function_url
+output "receiver_slack_function_url" {
+  value = aws_lambda_function_url.receiver_slack_function_url.function_url
 }

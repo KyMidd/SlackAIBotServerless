@@ -22,8 +22,14 @@ provider "aws" {
 }
 
 # Build lambda
-module "devopsbot_lambda" {
+module "lambda_resources" {
   source = "./lambda"
+
+  slack_bot_app_id     = var.slack_bot_app_id
+  slack_bot_token      = var.slack_bot_token
+  slack_signing_secret = var.slack_signing_secret
+  bot_name             = var.bot_name
+  model_name           = var.model_name
 
   # Pass providers
   providers = {
@@ -32,6 +38,6 @@ module "devopsbot_lambda" {
   }
 }
 
-output "receiver_lambda_arn_for_slack" {
-  value = module.devopsbot_lambda.DevOpsBot_Slack_Trigger_FunctionUrl
+output "bot_receiver_lambda_public_url" {
+  value = module.lambda_resources.receiver_slack_function_url
 }
