@@ -170,3 +170,13 @@ bin/**
 lib/**
 include/**
 pyvenv.cfg
+
+# Terraform vars
+terraform/*.tfvars
+
+# Claude
+**/.claude
+
+# Worker and Receiver zip files
+terraform/lambda/receiver.zip
+terraform/lambda/worker.zip

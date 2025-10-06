@@ -1,7 +1,7 @@
-# This is the full devopsbot.py file, which is the main file for the DevOps Bot. 
-# This file is responsible for handling all incoming messages and events from Slack, and then responding to them using the AI model. 
+# This is the full worker.py file, which is the main file for the Serverless Slack Bot.
+# This file is responsible for handling all incoming messages and events from Slack, and then responding to them using the AI model.
 # The file contains functions to handle messages, check for duplicate events, and initialize the Slack app with the bot token and socket mode handler.
-#  The file also contains the main handler function for AWS Lambda, which is used to handle incoming events from Slack. 
+#  The file also contains the main handler function for AWS Lambda, which is used to handle incoming events from Slack.
 # The file also contains a main function that runs the app in local development mode, which is used for testing and debugging the bot locally.
 # Author: Kyler Middleton
 # Blog about this file: https://www.letsdodevops.com/p/lets-do-devops-building-an-azure
@@ -41,26 +41,23 @@ current_utc_string = current_utc.strftime("%Y-%m-%d %H:%M:%S %Z")
 bot_name = os.environ.get("BOT_NAME")
 
 # Slack
-slack_buffer_token_size = 10 # Number of tokens to buffer before updating Slack
-slack_message_size_limit_words = 350 # Slack limit of characters in response is 4k. That's ~420 words. 350 words is a safe undershot of words that'll fit in a slack response. Used in the system prompt for the bot. 
+slack_buffer_token_size = 10  # Number of tokens to buffer before updating Slack
+slack_message_size_limit_words = 350  # Slack limit of characters in response is 4k. That's ~420 words. 350 words is a safe undershot of words that'll fit in a slack response. Used in the system prompt for the bot.
 
 # Specify model ID and temperature
 model_id = os.environ.get("MODEL_NAME")
 temperature = 0.2
 top_k = 25
 
-# Secrets manager secret name. Json payload should contain SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET
-bot_secret_name = os.environ.get("BOT_SECRET_NAME")
-
 # Debug
 debug_enabled = os.environ.get("DEBUG_ENABLED", "True") == "True"
 
 # Bedrock guardrail information
 # Guardrails must be in the same region as the model
-enable_guardrails = False # Won't use guardrails if False
+enable_guardrails = False  # Won't use guardrails if False
 guardrailIdentifier = "xxxxxxxxxx"
 guardrailVersion = "DRAFT"
-guardrailTracing = "enabled" # [enabled, enabled_full, disabled]
+guardrailTracing = "enabled"  # [enabled, enabled_full, disabled]
 
 # Specify the AWS region for the AI model
 model_region_name = "us-west-2"
@@ -77,7 +74,7 @@ initial_model_system_prompt = f"""
 
 # Knowledge bases
 enabled_knowledge_bases = [
-    #"confluence", # All knowledge bases disabled by default
+    # "confluence", # All knowledge bases disabled by default
 ]
 
 # Knowledge base context
@@ -131,7 +128,7 @@ def update_slack_response(say, client, message_ts, channel_id, thread_ts, messag
         )
 
         # Debug
-        if os.environ.get("VERA_DEBUG", "False") == "True":
+        if debug_enabled:
             print("🚀 Slack chat update response:", slack_response)
 
     # Check to see if the response was successful
@@ -196,7 +193,7 @@ def rerank_text(
     rank_response_body = json.loads(rank_response["body"].read().decode())
 
     # Debug
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 Rerank response body:", rank_response_body)
 
     # Response looks like this:
@@ -263,7 +260,7 @@ def ask_bedrock_llm_with_knowledge_base(
         # Raise error
         raise error
 
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 Raw knowledge base responses:", kb_response)
 
     # Structure response
@@ -281,7 +278,7 @@ def ask_bedrock_llm_with_knowledge_base(
         for result in kb_response["retrievalResults"]
     ]
 
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 Structured knowledge base responses:", kb_responses)
 
     if enable_rerank:
@@ -294,63 +291,10 @@ def ask_bedrock_llm_with_knowledge_base(
         )
 
         # Debug
-        if os.environ.get("VERA_DEBUG", "False") == "True":
+        if debug_enabled:
             print("🚀 Knowledge reranked response:", kb_responses)
 
     return kb_responses
-
-
-# Get GitHubPAT secret from AWS Secrets Manager that we'll use to start the githubcop workflow
-def get_secret_with_client(secret_name, region_name):
-
-    # Create a Secrets Manager client
-    session = boto3.session.Session()
-    client = session.client(service_name="secretsmanager", region_name=region_name)
-
-    try:
-        get_secret_value_response = client.get_secret_value(SecretId=secret_name)
-    except requests.exceptions.RequestException as e:
-        # For a list of exceptions thrown, see
-        # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
-        print("Had an error attempting to get secret from AWS Secrets Manager:", e)
-        raise e
-
-    # Decrypts secret using the associated KMS key.
-    secret = get_secret_value_response["SecretString"]
-
-    # Print happy joy joy
-    print("🚀 Successfully got secret", secret_name, "from AWS Secrets Manager")
-
-    # Return the secret
-    return secret
-
-
-# Get the secret using the SSM lambda layer
-def get_secret_ssm_layer(secret_name):
-    secrets_extension_endpoint = (
-        "http://localhost:2773/secretsmanager/get?secretId=" + secret_name
-    )
-
-    # Create headers
-    headers = {"X-Aws-Parameters-Secrets-Token": os.environ.get("AWS_SESSION_TOKEN")}
-
-    # Fetch secret
-    try:
-        secret = requests.get(secrets_extension_endpoint, headers=headers)
-    except requests.exceptions.RequestException as e:
-        print("Had an error attempting to get secret from AWS Secrets Manager:", e)
-        raise e
-
-    # Print happy joy joy
-    print("🚀 Successfully got secret", secret_name, "from AWS Secrets Manager")
-
-    # Decode secret string
-    secret = json.loads(secret.text)[
-        "SecretString"
-    ]  # load the Secrets Manager response into a Python dictionary, access the secret
-
-    # Return the secret
-    return secret
 
 
 # Create a Bedrock client
@@ -373,7 +317,7 @@ def register_slack_app(token, signing_secret):
 
     bot_info_json = bot_info.json()
 
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 Bot info:", bot_info_json)
 
     if bot_info_json.get("ok"):
@@ -394,7 +338,7 @@ def register_slack_app(token, signing_secret):
 
 # Enrich response with guardrail trace information
 def enrich_guardrail_block(response, full_event_payload):
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 Full event payload:", full_event_payload)
 
     # Check if the trace.guardrail.inputAssessment.4raioni9cwpe.contentPolicy.filters[0] path exists
@@ -533,7 +477,7 @@ def clean_response_text(response):
     """
 
     # Debug
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 Raw response before cleaning:", response)
 
     # Find the last instance of "Reranker scored this result relevancy at 0...." and remove everything before it
@@ -556,7 +500,7 @@ def clean_response_text(response):
     response = response.strip()
 
     # Debug
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 Response after cleaning:", response)
 
     # Return everything after the last match
@@ -611,7 +555,7 @@ def ai_request(
         }
 
     # Debug
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 converse_body:", converse_body)
 
     # Try to make the request to the AI model
@@ -648,7 +592,7 @@ def ai_request(
                 return response
 
             # Debug raw response
-            if os.environ.get("VERA_DEBUG", "False") == "True":
+            if debug_enabled:
                 print("🚀 Raw response from Bedrock:", response_raw)
 
             # Extract response where converse() puts it
@@ -687,7 +631,7 @@ def build_conversation_content(payload, token):
     unsupported_file_type_found = False
 
     # Debug
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 Conversation content payload:", payload)
 
     # Initialize the content array
@@ -711,7 +655,7 @@ def build_conversation_content(payload, token):
     user_info_json = user_info.json()
 
     # Debug
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 Conversation content user info:", user_info_json)
 
     # Identify the speaker's name based on their profile data
@@ -730,13 +674,13 @@ def build_conversation_content(payload, token):
             pronouns = f" ({profile['pronouns']})"
         except:
             # If no pronouns, use the initialized pronouns (blank)
-            if os.environ.get("VERA_DEBUG", "False") == "True":
+            if debug_enabled:
                 print("🚀 User has no pronouns, using blank pronouns")
 
     # If text is not empty, and text length is greater than 0, append to content array
     if "text" in payload and len(payload["text"]) > 1:
         # If debug variable is set to true, print the text found in the payload
-        if os.environ.get("VERA_DEBUG", "False") == "True":
+        if debug_enabled:
             print("🚀 Text found in payload: " + payload["text"])
 
         content.append(
@@ -751,7 +695,7 @@ def build_conversation_content(payload, token):
         for attachment in payload["attachments"]:
 
             # If debug variable is set to true, print the text found in the attachments
-            if os.environ.get("VERA_DEBUG", "False") == "True" and "text" in attachment:
+            if debug_enabled and "text" in attachment:
                 print("🚀 Text found in attachment: " + attachment["text"])
 
             # Check if the attachment contains text
@@ -772,7 +716,7 @@ def build_conversation_content(payload, token):
         for file in payload["files"]:
 
             # Debug
-            if os.environ.get("VERA_DEBUG", "False") == "True":
+            if debug_enabled:
                 print("🚀 File found in payload:", file)
 
             # Isolate name of the file and remove characters before the final period
@@ -931,7 +875,7 @@ def handle_message_event(
                 unsupported_file_type_found,
             ) = build_conversation_content(message, token)
 
-            if os.environ.get("VERA_DEBUG", "False") == "True":
+            if debug_enabled:
                 print("🚀 Thread conversation content:", thread_conversation_content)
 
             # Check if the thread conversation content is empty. This happens when a user sends an unsupported doc type only, with no message
@@ -957,7 +901,7 @@ def handle_message_event(
                         {"role": "user", "content": thread_conversation_content}
                     )
 
-                    if os.environ.get("VERA_DEBUG", "False") == "True":
+                    if debug_enabled:
                         print(
                             "🚀 State of conversation after threaded message append:",
                             conversation,
@@ -979,16 +923,16 @@ def handle_message_event(
             }
         )
 
-        if os.environ.get("VERA_DEBUG", "False") == "True":
+        if debug_enabled:
             print("🚀 State of conversation after append user's prompt:", conversation)
 
     # Check if conversation content is empty, this happens when a user sends an unsupported doc type only, with no message
     # Conversation looks like this: [{'role': 'user', 'text': []}]
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 State of conversation before check if convo is empty:", conversation)
     if conversation == []:
         # Conversation is empty, append to error message
-        if os.environ.get("VERA_DEBUG", "False") == "True":
+        if debug_enabled:
             print("🚀 Conversation is empty, exiting")
 
         # Announce the error
@@ -1035,7 +979,7 @@ def handle_message_event(
         )
 
         # Debug
-        if os.environ.get("VERA_DEBUG", "False") == "True":
+        if debug_enabled:
             print("🚀 State of conversation after context request:", conversation)
 
     # If any knowledge bases enabled, fetch citations
@@ -1043,7 +987,7 @@ def handle_message_event(
 
         print("🚀 Knowledge base enabled, fetching citations")
 
-        if os.environ.get("VERA_DEBUG", "False") == "True":
+        if debug_enabled:
             print("🚀 State of conversation before AI request:", conversation)
 
         # Flatten the conversation
@@ -1119,7 +1063,7 @@ def handle_message_event(
                 # Raise error
                 raise error
 
-            if os.environ.get("VERA_DEBUG", "False") == "True":
+            if debug_enabled:
                 print(f"🚀 Knowledge base response: {knowledge_base_response}")
 
             # Iterate through responses
@@ -1171,7 +1115,7 @@ def handle_message_event(
     )
 
     # Call the AI model with the conversation
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 State of conversation before AI request:", conversation)
 
     # Make the AI request
@@ -1187,7 +1131,7 @@ def handle_message_event(
     )
 
     # Debug
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 AI response:", ai_response)
 
     # Respond to user
@@ -1241,16 +1185,12 @@ def lambda_handler(event, context):
     print("🚀 Event:", event)
 
     # Debug
-    if os.environ.get("VERA_DEBUG", "False") == "True":
+    if debug_enabled:
         print("🚀 Event body:", event_body)
 
-    # Fetch secret package
-    secrets = get_secret_ssm_layer(bot_secret_name)
-
-    # Disambiguate the secrets with json lookups
-    secrets_json = json.loads(secrets)
-    token = secrets_json["SLACK_BOT_TOKEN"]
-    signing_secret = secrets_json["SLACK_SIGNING_SECRET"]
+    # Slack secrets
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    signing_secret = os.environ.get("SLACK_SIGNING_SECRET")
 
     # Register the Slack handler
     print("🚀 Registering the Slack handler")
@@ -1278,8 +1218,16 @@ def lambda_handler(event, context):
 
     # Initialize the handler
     print("🚀 Initializing the handler")
+    print(f"🚀 Event type from event_body: {event_body.get('type')}")
+    print(
+        f"🚀 Event.event.type from event_body: {event_body.get('event', {}).get('type')}"
+    )
     slack_handler = SlackRequestHandler(app=app)
-    return slack_handler.handle(event, context)
+
+    print("🚀 Calling slack_handler.handle()")
+    result = slack_handler.handle(event, context)
+    print(f"🚀 slack_handler.handle() returned: {result}")
+    return result
 
 
 # Main function, primarily for local development
@@ -1287,13 +1235,9 @@ if __name__ == "__main__":
     # Run in local development mode
     print("🚀 Local server starting starting")
 
-    # Fetch secret package
-    secrets = get_secret_with_client(bot_secret_name, "us-east-1")
-
-    # Disambiguate the secrets with json lookups
-    secrets_json = json.loads(secrets)
-    token = secrets_json["SLACK_BOT_TOKEN"]
-    signing_secret = secrets_json["SLACK_SIGNING_SECRET"]
+    # Slack secrets
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    signing_secret = os.environ.get("SLACK_SIGNING_SECRET")
 
     # Register the Slack handler
     print("🚀 Registering the Slack handler")

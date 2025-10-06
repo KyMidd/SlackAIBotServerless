@@ -31,36 +31,6 @@ resource "aws_iam_role" "worker_role" {
   assume_role_policy = data.aws_iam_policy_document.worker_assume_role.json
 }
 
-resource "aws_iam_role_policy" "worker_ReadSecret" {
-  name = "ReadSecret"
-  role = aws_iam_role.worker_role.id
-
-  policy = jsonencode(
-    {
-      "Version" : "2012-10-17",
-      "Statement" : [
-        {
-          "Effect" : "Allow",
-          "Action" : [
-            "secretsmanager:GetResourcePolicy",
-            "secretsmanager:GetSecretValue",
-            "secretsmanager:DescribeSecret",
-            "secretsmanager:ListSecretVersionIds"
-          ],
-          "Resource" : [
-            aws_secretsmanager_secret.BotSecret.arn
-          ]
-        },
-        {
-          "Effect" : "Allow",
-          "Action" : "secretsmanager:ListSecrets",
-          "Resource" : "*"
-        }
-      ]
-    }
-  )
-}
-
 resource "aws_iam_role_policy" "worker_Bedrock" {
   name = "Bedrock"
   role = aws_iam_role.worker_role.id
@@ -226,7 +196,7 @@ resource "aws_lambda_function" "worker_slack" {
   layers = [
     # This layer permits us to ingest secrets from Secrets Manager
     # It's hosted by AWS, so we can just reference the ARN directly
-    "arn:aws:lambda:us-east-1:177933569100:layer:AWS-Parameters-and-Secrets-Lambda-Extension-Arm64:12",
+    #"arn:aws:lambda:us-east-1:177933569100:layer:AWS-Parameters-and-Secrets-Lambda-Extension-Arm64:12",
 
     # Slack bolt layer to support slack app
     aws_lambda_layer_version.slack_bolt.arn,
@@ -239,10 +209,11 @@ resource "aws_lambda_function" "worker_slack" {
 
   environment {
     variables = {
-      BOT_SECRET_NAME  = local.bot_secrets_manager_secret_name
       BOT_NAME         = var.bot_name
       MODEL_NAME       = var.model_name
       SLACK_BOT_APP_ID = var.slack_bot_app_id
+      SLACK_BOT_TOKEN  = var.slack_bot_token
+      SLACK_SIGNING_SECRET = var.slack_signing_secret
     }
   }
 }

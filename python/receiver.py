@@ -102,7 +102,9 @@ def lambda_handler(event, context):
                 Payload=json.dumps(event),
             )
 
-            print(f"🟢 Invoked processor Lambda with function name: {PROCESSOR_FUNCTION_NAME}")
+            print(
+                f"🟢 Invoked processor Lambda with function name: {PROCESSOR_FUNCTION_NAME}"
+            )
 
         # Always return 200 OK to Slack quickly
         return {"statusCode": 200, "body": json.dumps({"message": "Event received"})}
