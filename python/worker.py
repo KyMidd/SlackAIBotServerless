@@ -54,8 +54,8 @@ debug_enabled = os.environ.get("DEBUG_ENABLED", "True") == "True"
 
 # Bedrock guardrail information
 # Guardrails must be in the same region as the model
-enable_guardrails = False  # Won't use guardrails if False
-guardrailIdentifier = "xxxxxxxxxx"
+enable_guardrails = True  # Won't use guardrails if False
+guardrailIdentifier = os.environ.get("GUARDRAIL_ID")
 guardrailVersion = "DRAFT"
 guardrailTracing = "enabled"  # [enabled, enabled_full, disabled]
 

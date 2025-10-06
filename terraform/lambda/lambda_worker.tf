@@ -209,8 +209,12 @@ resource "aws_lambda_function" "worker_slack" {
 
   environment {
     variables = {
+      # Bot stuff
       BOT_NAME         = var.bot_name
       MODEL_NAME       = var.model_name
+      GUARDRAIL_ID     = aws_bedrock_guardrail.guardrail.guardrail_id
+      
+      # Slack stuff
       SLACK_BOT_APP_ID = var.slack_bot_app_id
       SLACK_BOT_TOKEN  = var.slack_bot_token
       SLACK_SIGNING_SECRET = var.slack_signing_secret
